@@ -1,4 +1,9 @@
-import type { GroundingLink, OpenSourceModelSpec, UserIdentityProfile } from '../types/shamia';
+import type {
+  GroundingLink,
+  OfflineVoiceModelSpec,
+  OpenSourceModelSpec,
+  UserIdentityProfile,
+} from '../types/shamia';
 
 export interface DeviceHardwareReport {
   webGpuAvailable: boolean;
@@ -28,9 +33,9 @@ export function detectDeviceHardware(): DeviceHardwareReport {
 
   let recommendedTier = 'Offline Core + Cloud Search';
   if (webGpuAvailable && (deviceMemoryGb === null || deviceMemoryGb >= 4)) {
-    recommendedTier = 'WebGPU + 2B Quantized Ready';
+    recommendedTier = '4nm/6nm WebGPU + 2B Ready';
   } else if (deviceMemoryGb !== null && deviceMemoryGb >= 3) {
-    recommendedTier = '1B–1.5B Quantized Ready';
+    recommendedTier = '6nm 1B–1.5B Quantized Ready';
   }
 
   return {
@@ -117,12 +122,82 @@ export async function queryLocalOllama(params: {
   return content;
 }
 
-// Dynamic In-Browser WebGPU/WASM Pipeline Loader (Transformers.js)
+const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.4.0/+esm';
+const INSTALLED_MODELS_KEY = 'shamia.installedModels.v1';
+const INSTALLED_VOICE_KEY = 'shamia.installedVoiceModels.v1';
+const CUSTOM_MODELS_KEY = 'shamia.customModels.v1';
+
+function readInstalledIds(key: string): string[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(key);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveInstalledId(key: string, id: string) {
+  if (typeof window === 'undefined') return;
+  const list = readInstalledIds(key);
+  if (!list.includes(id)) {
+    window.localStorage.setItem(key, JSON.stringify([...list, id]));
+  }
+}
+
+export function loadCustomOpenSourceModels(): OpenSourceModelSpec[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_MODELS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? (parsed as OpenSourceModelSpec[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveCustomOpenSourceModel(hfRepo: string): OpenSourceModelSpec {
+  const cleanRepo = hfRepo.trim().replace(/^https?:\/\/huggingface\.co\//i, '').replace(/\/+$/, '');
+  const shortName = cleanRepo.split('/').pop() || cleanRepo;
+  const spec: OpenSourceModelSpec = {
+    id: `custom-${cleanRepo.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+    name: shortName,
+    provider: 'Custom Hugging Face ONNX',
+    params: 'Custom Q4',
+    sizeLabel: 'Browser Cache',
+    minRamGb: 3,
+    chipsetNote: '6nm+ / 4nm Custom',
+    runtime: 'webgpu',
+    family: 'custom',
+    hfRepo: cleanRepo,
+    summary: `Custom open-source repository (${cleanRepo}) cached offline in browser IndexedDB.`,
+    smartphoneReady: true,
+  };
+  if (typeof window !== 'undefined') {
+    const existing = loadCustomOpenSourceModels().filter((m) => m.id !== spec.id);
+    window.localStorage.setItem(CUSTOM_MODELS_KEY, JSON.stringify([spec, ...existing]));
+  }
+  return spec;
+}
+
 interface TextGenerationPipeline {
   (
     messages: Array<{ role: string; content: string }>,
     options?: Record<string, unknown>
   ): Promise<Array<{ generated_text?: Array<{ role: string; content: string }> | string }>>;
+}
+
+interface TransformersModule {
+  pipeline: (
+    task: string,
+    model: string,
+    opts?: Record<string, unknown>
+  ) => Promise<unknown>;
+}
+
+async function importTransformers(): Promise<TransformersModule> {
+  return (await import(/* @vite-ignore */ TRANSFORMERS_CDN)) as TransformersModule;
 }
 
 class BrowserOpenSourceLoader {
@@ -133,50 +208,47 @@ class BrowserOpenSourceLoader {
     return this.loadedModelId;
   }
 
+  public getInstalledModelIds(): string[] {
+    return readInstalledIds(INSTALLED_MODELS_KEY);
+  }
+
   public async loadModel(
     spec: OpenSourceModelSpec,
     onProgress: (pct: number, statusText: string) => void
   ): Promise<void> {
     if (!spec.hfRepo) {
-      throw new Error('This model runs via local Ollama or built-in engine, not browser WebGPU.');
+      throw new Error('This model runs via built-in engine or local Ollama.');
     }
 
     if (this.loadedModelId === spec.id && this.generator) {
-      onProgress(100, 'Ready in browser memory');
+      onProgress(100, `${spec.name} active offline in memory`);
       return;
     }
 
     onProgress(8, `Initializing ${spec.name} runtime...`);
 
-    const modUrl = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.4.0/+esm';
-    const transformers = (await import(/* @vite-ignore */ modUrl)) as {
-      pipeline: (
-        task: string,
-        model: string,
-        opts?: Record<string, unknown>
-      ) => Promise<TextGenerationPipeline>;
-    };
-
+    const transformers = await importTransformers();
     const hasWebGpu = typeof navigator !== 'undefined' && 'gpu' in navigator;
 
-    const pipe = await transformers.pipeline('text-generation', spec.hfRepo, {
+    const pipe = (await transformers.pipeline('text-generation', spec.hfRepo, {
       device: hasWebGpu ? 'webgpu' : 'wasm',
       dtype: 'q4',
       progress_callback: (info: { status?: string; progress?: number; file?: string }) => {
         if (typeof info.progress === 'number') {
           onProgress(
             Math.max(10, Math.min(99, Math.round(info.progress))),
-            `Downloading ${info.file || spec.name}...`
+            `Caching ${info.file || spec.name}...`
           );
         } else if (info.status) {
           onProgress(15, `${info.status}...`);
         }
       },
-    });
+    })) as TextGenerationPipeline;
 
     this.generator = pipe;
     this.loadedModelId = spec.id;
-    onProgress(100, `${spec.name} cached & ready offline`);
+    saveInstalledId(INSTALLED_MODELS_KEY, spec.id);
+    onProgress(100, `${spec.name} installed & ready offline`);
   }
 
   public async generate(
@@ -185,12 +257,12 @@ class BrowserOpenSourceLoader {
     webContext?: string
   ): Promise<string> {
     if (!this.generator) {
-      throw new Error('Browser open-source model is not loaded yet.');
+      throw new Error('Browser open-source model is not initialized yet.');
     }
 
     const addr = identity.addressAs.trim() || 'Sir';
     const sys = [
-      `You are S.H.A.M.I.A., a loyal, human-like personal assistant for ${identity.fullName}. Always address the user strictly as "${addr}". Keep responses concise and natural (2-3 sentences).`,
+      `You are S.H.A.M.I.A., a calm, capable personal assistant for ${identity.fullName}. Address the user respectfully as "${addr}". Keep responses concise and natural (2-3 sentences).`,
       webContext ? `Real-time web context:\n${webContext}` : '',
     ]
       .filter(Boolean)
@@ -215,4 +287,97 @@ class BrowserOpenSourceLoader {
   }
 }
 
+type SttPipeline = (audio: Float32Array) => Promise<{ text?: string }>;
+type TtsPipeline = (
+  text: string,
+  options?: Record<string, unknown>
+) => Promise<{ audio?: Float32Array; sampling_rate?: number }>;
+
+class OfflineVoiceAssistantRunner {
+  private sttModelId: string | null = null;
+  private sttPipe: SttPipeline | null = null;
+  private ttsModelId: string | null = null;
+  private ttsPipe: TtsPipeline | null = null;
+
+  public getInstalledVoiceIds(): string[] {
+    return readInstalledIds(INSTALLED_VOICE_KEY);
+  }
+
+  public isSttReady(): boolean {
+    return Boolean(this.sttPipe);
+  }
+
+  public isTtsReady(): boolean {
+    return Boolean(this.ttsPipe);
+  }
+
+  public getActiveSttId(): string | null {
+    return this.sttModelId;
+  }
+
+  public getActiveTtsId(): string | null {
+    return this.ttsModelId;
+  }
+
+  public async installVoiceModel(
+    spec: OfflineVoiceModelSpec,
+    onProgress: (pct: number, statusText: string) => void
+  ): Promise<void> {
+    onProgress(8, `Preparing ${spec.name}...`);
+    const transformers = await importTransformers();
+
+    const task = spec.kind === 'stt' ? 'automatic-speech-recognition' : 'text-to-speech';
+    const pipe = await transformers.pipeline(task, spec.hfRepo, {
+      device: 'wasm',
+      dtype: spec.kind === 'stt' ? 'q8' : 'q8',
+      progress_callback: (info: { status?: string; progress?: number; file?: string }) => {
+        if (typeof info.progress === 'number') {
+          onProgress(
+            Math.max(10, Math.min(99, Math.round(info.progress))),
+            `Installing ${info.file || spec.name}...`
+          );
+        } else if (info.status) {
+          onProgress(15, `${info.status}...`);
+        }
+      },
+    });
+
+    if (spec.kind === 'stt') {
+      this.sttPipe = pipe as SttPipeline;
+      this.sttModelId = spec.id;
+    } else {
+      this.ttsPipe = pipe as TtsPipeline;
+      this.ttsModelId = spec.id;
+    }
+
+    saveInstalledId(INSTALLED_VOICE_KEY, spec.id);
+    onProgress(100, `${spec.name} installed & active offline`);
+  }
+
+  public async transcribeAudio(pcm16k: Float32Array): Promise<string> {
+    if (!this.sttPipe) {
+      throw new Error('Offline Whisper voice model is not loaded yet.');
+    }
+    const res = await this.sttPipe(pcm16k);
+    return (res?.text || '').trim();
+  }
+
+  public async synthesizeSpeech(text: string): Promise<{ audio: Float32Array; sampleRate: number } | null> {
+    if (!this.ttsPipe) return null;
+    try {
+      const out = await this.ttsPipe(text, { voice: 'af_heart' });
+      if (out?.audio && out.audio.length > 0) {
+        return {
+          audio: out.audio,
+          sampleRate: out.sampling_rate || 24000,
+        };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+}
+
 export const browserModelRunner = new BrowserOpenSourceLoader();
+export const offlineVoiceRunner = new OfflineVoiceAssistantRunner();

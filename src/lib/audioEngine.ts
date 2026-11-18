@@ -1,4 +1,5 @@
 import type { MusicTrack } from '../types/shamia';
+import { offlineVoiceRunner } from './openSourceEngine';
 
 // Polyphonic Web Audio ambient synth player + alarm chime + British TTS + Speech Recognition wrapper
 
@@ -126,6 +127,7 @@ class ShamiaAudioEngine {
 export const shamiaAudio = new ShamiaAudioEngine();
 
 let activeUtterance: SpeechSynthesisUtterance | null = null;
+let activeOfflineSource: AudioBufferSourceNode | null = null;
 
 function cleanSpeechText(raw: string): string {
   return raw
@@ -143,13 +145,65 @@ export function speakShamia(
     onEnd?: () => void;
   }
 ) {
-  if (typeof window === 'undefined' || !('speechSynthesis' in window) || !options.enabled) {
+  if (typeof window === 'undefined' || !options.enabled) {
     options.onEnd?.();
     return;
   }
 
   const spoken = cleanSpeechText(text);
   if (!spoken) {
+    options.onEnd?.();
+    return;
+  }
+
+  // Prefer installed offline open-source neural voice (Kokoro 82M) if loaded
+  if (offlineVoiceRunner.isTtsReady()) {
+    options.onStart?.();
+    void (async () => {
+      try {
+        const res = await offlineVoiceRunner.synthesizeSpeech(spoken);
+        if (res && res.audio.length > 0) {
+          const AudioCtx =
+            window.AudioContext ||
+            (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+          if (AudioCtx) {
+            const ctx = new AudioCtx();
+            if (ctx.state === 'suspended') await ctx.resume();
+            const buf = ctx.createBuffer(1, res.audio.length, res.sampleRate);
+            buf.copyToChannel(new Float32Array(res.audio), 0);
+            const src = ctx.createBufferSource();
+            src.buffer = buf;
+            src.connect(ctx.destination);
+            activeOfflineSource?.stop();
+            activeOfflineSource = src;
+            src.onended = () => {
+              activeOfflineSource = null;
+              void ctx.close().catch(() => {});
+              options.onEnd?.();
+            };
+            src.start();
+            return;
+          }
+        }
+      } catch {
+        // Fallback smoothly to browser speech synthesis below
+      }
+      speakWithBrowserSpeech(spoken, options);
+    })();
+    return;
+  }
+
+  speakWithBrowserSpeech(spoken, options);
+}
+
+function speakWithBrowserSpeech(
+  spoken: string,
+  options: {
+    onStart?: () => void;
+    onEnd?: () => void;
+  }
+) {
+  if (!('speechSynthesis' in window)) {
     options.onEnd?.();
     return;
   }
@@ -192,6 +246,14 @@ export function speakShamia(
 }
 
 export function stopSpeakingShamia() {
+  if (activeOfflineSource) {
+    try {
+      activeOfflineSource.stop();
+    } catch {
+      // ignore
+    }
+    activeOfflineSource = null;
+  }
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     try {
       window.speechSynthesis.cancel();
@@ -284,5 +346,69 @@ export function createVoiceRecognizer(callbacks: {
     supported: true,
     start: () => recognition.start(),
     stop: () => recognition.stop(),
+  };
+}
+
+export function createOfflineWhisperRecognizer(callbacks: {
+  onInterim: (text: string) => void;
+  onFinal: (text: string) => void;
+  onError: (reason: string) => void;
+  onEnd: () => void;
+}): VoiceRecognitionHandle {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+    return { supported: false, start: () => {}, stop: () => {} };
+  }
+
+  let recorder: MediaRecorder | null = null;
+  let stream: MediaStream | null = null;
+  const chunks: Blob[] = [];
+
+  return {
+    supported: true,
+    start: () => {
+      void (async () => {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          recorder = new MediaRecorder(stream);
+          recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunks.push(e.data);
+          };
+          recorder.onstop = () => {
+            void (async () => {
+              try {
+                callbacks.onInterim('Transcribing offline via Whisper...');
+                const blob = new Blob(chunks, { type: recorder?.mimeType || 'audio/webm' });
+                const buf = await blob.arrayBuffer();
+                const ctx = new AudioContext({ sampleRate: 16000 });
+                const decoded = await ctx.decodeAudioData(buf);
+                const channel = decoded.getChannelData(0);
+                const text = await offlineVoiceRunner.transcribeAudio(channel);
+                await ctx.close().catch(() => {});
+                if (text) callbacks.onFinal(text);
+                else callbacks.onError('No clear speech detected.');
+              } catch {
+                callbacks.onError('Offline voice transcription interrupted.');
+              } finally {
+                stream?.getTracks().forEach((t) => t.stop());
+                callbacks.onEnd();
+              }
+            })();
+          };
+          recorder.start();
+          callbacks.onInterim('Recording offline audio... Tap mic to finish');
+        } catch {
+          callbacks.onError('not-allowed');
+          callbacks.onEnd();
+        }
+      })();
+    },
+    stop: () => {
+      if (recorder && recorder.state === 'recording') {
+        recorder.stop();
+      } else {
+        stream?.getTracks().forEach((t) => t.stop());
+        callbacks.onEnd();
+      }
+    },
   };
 }

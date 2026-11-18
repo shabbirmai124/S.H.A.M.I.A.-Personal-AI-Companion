@@ -9,18 +9,12 @@
 
 > Watch **S.H.A.M.I.A.** in action below: instant offline status reporting, real-time spoken English fluency correction, hardware-checked open-source phone models (0 MB – 2B), permission-gated phone controls, Permission Vault rules, and the inline 4-4-6 mindful breathing reset.
 
-### Animated Preview
+### Live Demo Preview (GitHub Native)
 
 ![S.H.A.M.I.A. Interactive Demo Walkthrough](docs/media/shamia-demo.gif)
 
-### Full Playable Video Files
-
-<video src="docs/media/shamia-demo.mp4" controls width="100%" poster="docs/media/shamia-desktop-hud.png">
-  Your Markdown viewer does not support inline HTML5 video playback. Use the direct video links below.
-</video>
-
-- **MP4 Demo (H.264 / Universal):** [`docs/media/shamia-demo.mp4`](docs/media/shamia-demo.mp4)
-- **WebM Demo (VP8 / Browser Native):** [`docs/media/shamia-demo.webm`](docs/media/shamia-demo.webm)
+- **Watch / Download MP4 Video (H.264):** [`docs/media/shamia-demo.mp4`](docs/media/shamia-demo.mp4)
+- **Watch / Download WebM Video (VP8):** [`docs/media/shamia-demo.webm`](docs/media/shamia-demo.webm)
 
 ---
 
@@ -75,43 +69,38 @@ S.H.A.M.I.A. automatically detects your device's **WebGPU support**, **RAM (GB)*
 
 | Model | Parameters | Size / Cache | Min RAM | Runtime Mode | Best Use Case |
 | :--- | :---: | :---: | :---: | :--- | :--- |
-| **S.H.A.M.I.A. Offline Core** | `0 MB` | Zero Download | `1 GB+` | Built-In Local Engine | Instant offline commands, English grammar coaching, breathing guide, alarms & memory |
-| **Qwen 2.5 0.5B Instruct** | `0.5B` | `~390 MB` | `2 GB+` | **In-Browser WebGPU / WASM** | Runs 100% inside mobile/desktop browser cache offline (IndexedDB) |
-| **Llama 3.2 1B Instruct** | `1.2B` | `~780 MB Q4` | `3 GB+` | Local Ollama | Ultra-fast quantized chat on Snapdragon, Tensor & Apple Silicon |
-| **Qwen 2.5 1.5B Instruct** | `1.5B` | `~980 MB Q4` | `3 GB+` | Local Ollama | Balanced 1.5B model for English tutoring & structured replies |
-| **SmolLM2 1.7B Instruct** | `1.7B` | `~1.0 GB` | `3 GB+` | Local Ollama | Compact ~2B model engineered for low-battery mobile CPUs |
-| **Gemma 2 2B / E2B (Q4)** | `2.0B` | `~1.4 GB Q4` | `4 GB+` | Local Ollama | Strongest 2B open-weight local reasoning & function routing |
-| **Free Open Web + Server AI** | Cloud | `Real-Time Web` | `1 GB+` | `/api/web-search` + Proxy | Live web-grounded answers when online |
+| **Gemma 3 · Open Weights** *(Default)* | `1B – 4B` | Free Online / `~1.4 GB Q4` | `2 GB+` | **Free Online + Browser WebGPU / Ollama** | Fast everyday conversation, reasoning, English coaching & live web search |
+| **Llama 3.2 1B Instruct** | `1.2B` | Free Online / `~780 MB Q4` | `2 GB+` | **Free Online + Browser WebGPU / Ollama** | Meta mobile-first open model; free instant chat & on-device caching |
+| **Qwen 2.5 1.5B Instruct** | `1.5B` | Free Online / `~980 MB Q4` | `3 GB+` | **Free Online + Browser WebGPU / Ollama** | English fluency tutoring and structured device commands |
+| **SmolLM2 1.7B Instruct** | `1.7B` | Free Online / `~1.0 GB` | `3 GB+` | **Free Online + Browser WebGPU / Ollama** | Low-battery compact open model for mobile CPUs |
+| **Qwen 2.5 0.5B (Offline Cache)** | `0.5B` | `~390 MB` | `2 GB+` | **In-Browser WebGPU / WASM** | Ultra-light offline browser execution (IndexedDB) |
+| **S.H.A.M.I.A. Offline Core** | `0 MB` | Zero Download | `1 GB+` | **Built-In Local Engine** | Instant 0 MB offline phone controls, alarms, English tips & 4-4-6 breathing |
 
 ### How to Load Models Locally Step by Step
 
-#### Option A — Zero-Download Offline Mode (Instant)
-1. Open the **Models** tab in the right panel.
-2. Select **S.H.A.M.I.A. Offline Core** (active by default).
-3. Everything—voice, phone actions, tasks, notes, alarms, English coaching, and breathing support—works immediately with zero internet connection.
+#### Option A — Free Instant Chat Online + Automatic Offline Fallback
+1. Open S.H.A.M.I.A. and use **Gemma 3 · Open Weights** or switch to **Llama 3.2 1B Instruct**, **Qwen 2.5 1.5B**, or **SmolLM2 1.7B** in the **Models** tab.
+2. Normal conversations, voice speaking (auto TTS + per-message **Speak** replay button), English coaching, and live web search work right away with zero client configuration.
 
-#### Option B — Run Directly Inside Your Browser (Offline WebGPU / WASM Cache)
-1. Open the **Models** tab and verify your **Device Compatibility** shows `2 GB+` RAM.
-2. Click **Load Offline in Browser** on **Qwen 2.5 0.5B (In-Browser WebGPU)**.
-3. S.H.A.M.I.A. downloads the quantized Q4 weights once via `@huggingface/transformers` into your browser's local IndexedDB cache (`WebGPU` if supported, `WASM` fallback otherwise).
-4. Once cached, click **Use**—you can disconnect Wi-Fi and run the neural model completely offline.
+#### Option B — Load & Cache Directly Inside Your Browser (100% Offline WebGPU / WASM)
+1. Open the **Models** tab and check **Device Compatibility** (`2 GB+` RAM).
+2. Click **Load Offline in Browser** on **Gemma 3**, **Llama 3.2 1B**, **Qwen 2.5 0.5B / 1.5B**, or **SmolLM2 1.7B**.
+3. S.H.A.M.I.A. caches the quantized Q4 weights in browser IndexedDB (`WebGPU` if available, `WASM` fallback otherwise) so you can run offline without any external server.
 
 #### Option C — Run 1B–2B Quantized Models Locally via Ollama (Phone Termux / Laptop / Desktop)
 1. Install [Ollama](https://ollama.com) on your machine (or Android via Termux/Linux container).
 2. Pull any smartphone-sized open-source model:
    ```bash
-   ollama pull gemma2:2b
+   ollama pull gemma3:1b
+   ollama pull llama3.2:1b
    ollama pull qwen2.5:1.5b
    ollama pull smollm2:1.7b
-   ollama pull llama3.2:1b
    ```
 3. Start Ollama allowing local browser requests from S.H.A.M.I.A.:
    ```bash
    OLLAMA_ORIGINS="*" ollama serve
    ```
-4. In S.H.A.M.I.A.'s **Models** tab:
-   - Confirm the Ollama endpoint is `http://127.0.0.1:11434` (or your LAN phone/PC IP).
-   - Click **Use** on your pulled model (`Gemma 2 2B`, `Qwen 2.5 1.5B`, `SmolLM2 1.7B`, or `Llama 3.2 1B`).
+4. Confirm `http://127.0.0.1:11434` (or your LAN IP) in the **Models** tab and click **Test**.
 
 ---
 
@@ -170,6 +159,20 @@ npm run lint
 
 # Production build
 npm run build
+```
+
+### Publishing Safely to Your Private GitHub Repository
+
+`.gitignore` automatically excludes `.env*` (keeping `.env.example`), `*.pem`, `*.key`, `secrets/`, `.aistudio/`, `.playwright-cli/`, and `node_modules/`.
+
+```bash
+git init
+git add .
+git status   # Confirm no .env or secret files appear
+git commit -m "Initial private release of S.H.A.M.I.A."
+git branch -M main
+git remote add origin https://github.com/<your-username>/shamia-assistant.git
+git push -u origin main
 ```
 
 ---

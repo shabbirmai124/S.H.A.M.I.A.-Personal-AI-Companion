@@ -6,6 +6,7 @@ import {
   matchLocalIntent,
   parseAlarmRequest,
   resolveSupportedApp,
+  shouldTriggerLiveSearch,
   validatePhoneNumber,
 } from './intentEngine';
 import { DEFAULT_DEVICE_CONTROLS } from './memoryStore';
@@ -108,4 +109,12 @@ test('parseAlarmRequest parses relative minutes accurately', () => {
   const now = new Date('2026-11-17T09:00:00');
   const parsed = parseAlarmRequest('Set alarm in 10 minutes', now);
   assert.equal(parsed.triggerAt, now.getTime() + 10 * 60 * 1000);
+});
+
+test('shouldTriggerLiveSearch detects phone processor queries and real-time Google search triggers', () => {
+  assert.equal(shouldTriggerLiveSearch('which phones have 4nm processor or 6nm processor'), true);
+  assert.equal(shouldTriggerLiveSearch('google latest Snapdragon chips'), true);
+  assert.equal(shouldTriggerLiveSearch('how are you?'), false);
+  assert.equal(shouldTriggerLiveSearch('Turn on Wi-Fi'), false);
+  assert.equal(shouldTriggerLiveSearch('hello', true), true);
 });

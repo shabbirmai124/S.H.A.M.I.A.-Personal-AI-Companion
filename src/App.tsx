@@ -17,6 +17,7 @@ import { MediaBar } from './components/MediaBar';
 import { MemoryAndPermissionsPanel, type PanelTab } from './components/MemoryAndPermissionsPanel';
 import { QuantumCore } from './components/QuantumCore';
 import {
+  createOfflineWhisperRecognizer,
   createVoiceRecognizer,
   shamiaAudio,
   speakShamia,
@@ -29,30 +30,41 @@ import {
   evaluatePermission,
   matchLocalIntent,
   resolveSupportedApp,
+  shouldTriggerLiveSearch,
   validatePhoneNumber,
 } from './lib/intentEngine';
 import { buildShamiaSystemInstruction } from './lib/shamiaPrompts';
 import {
   addAlarmItem,
   addNoteItem,
+  addRoutineItem,
+  addSyllabusItem,
   addTaskItem,
   clearCompletedTaskItems,
   DEFAULT_DEVICE_CONTROLS,
   DEFAULT_PERMISSION_RULES,
   DEFAULT_USER_IDENTITY,
   deleteNoteItem,
+  deleteRoutineItem,
+  deleteSyllabusItem,
   dismissAlarmItem,
   INITIAL_NOTES,
+  INITIAL_ROUTINE,
+  INITIAL_SYLLABUS,
   INITIAL_TASKS,
   MUSIC_TRACKS,
   OPEN_SOURCE_MODEL_CATALOG,
   policiesRecordFromRules,
   SYSTEM_NAME,
+  toggleRoutineItem,
+  toggleSyllabusItem,
   toggleTaskItem,
 } from './lib/memoryStore';
 import { generateOfflineCompanionReply } from './lib/offlineCompanion';
 import {
   browserModelRunner,
+  loadCustomOpenSourceModels,
+  offlineVoiceRunner,
   queryLocalOllama,
   runFreeWebSearch,
 } from './lib/openSourceEngine';
@@ -68,6 +80,8 @@ import type {
   PermissionCapability,
   PermissionPolicy,
   PermissionRule,
+  RoutineItem,
+  SyllabusItem,
   TaskItem,
   UserIdentityProfile,
 } from './types/shamia';
@@ -75,12 +89,16 @@ import type {
 const STORAGE_KEYS = {
   tasks: 'shamia.tasks.v1',
   notes: 'shamia.notes.v1',
-  permissions: 'shamia.permissions.v1',
   alarms: 'shamia.alarms.v1',
+  routine: 'shamia.routine.v1',
+  syllabus: 'shamia.syllabus.v1',
+  permissions: 'shamia.permissions.v1',
   identity: 'shamia.identity.v1',
   controls: 'shamia.controls.v1',
-  modelId: 'shamia.model.v2',
+  modelId: 'shamia.model.v3',
   ollamaUrl: 'shamia.ollama.v1',
+  ensembleEnabled: 'shamia.ensembleEnabled.v1',
+  ensembleModels: 'shamia.ensembleModels.v1',
 };
 
 function loadStoredJson<T>(key: string, fallback: T): T {
@@ -98,7 +116,7 @@ const QUICK_SUGGESTIONS: Array<{ label: string; prompt: string; search?: boolean
   { label: 'Status Report', prompt: 'Status Report' },
   { label: 'Practice English', prompt: 'Let us practice spoken English together.' },
   { label: 'I Feel Stressed', prompt: 'I am feeling overwhelmed today and need a calm check-in.' },
-  { label: 'Web Search', prompt: 'Search latest breakthroughs in solid-state smartphone batteries', search: true },
+  { label: '4nm vs 6nm Phones', prompt: 'Which phones have a 4nm processor or 6nm processor?', search: true },
   { label: 'Set Alarm', prompt: 'Set alarm in 5 minutes' },
   { label: 'Play Music', prompt: 'Play focus music' },
 ];
@@ -116,6 +134,12 @@ export default function App() {
   const [alarms, setAlarms] = useState<AlarmItem[]>(() =>
     loadStoredJson(STORAGE_KEYS.alarms, [])
   );
+  const [routine, setRoutine] = useState<RoutineItem[]>(() =>
+    loadStoredJson(STORAGE_KEYS.routine, INITIAL_ROUTINE)
+  );
+  const [syllabus, setSyllabus] = useState<SyllabusItem[]>(() =>
+    loadStoredJson(STORAGE_KEYS.syllabus, INITIAL_SYLLABUS)
+  );
   const [permissions, setPermissions] = useState<PermissionRule[]>(() =>
     loadStoredJson(STORAGE_KEYS.permissions, DEFAULT_PERMISSION_RULES)
   );
@@ -123,13 +147,23 @@ export default function App() {
     loadStoredJson(STORAGE_KEYS.controls, DEFAULT_DEVICE_CONTROLS)
   );
   const [selectedModelId, setSelectedModelId] = useState<string>(() =>
-    loadStoredJson(STORAGE_KEYS.modelId, 'gemma-3-free')
+    loadStoredJson(STORAGE_KEYS.modelId, 'gemma-4-free')
   );
   const [rightTab, setRightTab] = useState<PanelTab>('memory');
   const [ollamaUrl, setOllamaUrl] = useState<string>(() =>
     loadStoredJson(STORAGE_KEYS.ollamaUrl, 'http://127.0.0.1:11434')
   );
   const [webSearchEnabled, setWebSearchEnabled] = useState<boolean>(true);
+  const [ensembleEnabled, setEnsembleEnabled] = useState<boolean>(() =>
+    loadStoredJson(STORAGE_KEYS.ensembleEnabled, false)
+  );
+  const [ensembleModelIds, setEnsembleModelIds] = useState<string[]>(() =>
+    loadStoredJson(STORAGE_KEYS.ensembleModels, [
+      'gemma-4-free',
+      'qwen3-8b-chinese',
+      'gpt-oss-20b-free',
+    ])
+  );
 
   const [messages, setMessages] = useState<HudMessage[]>(() => [
     {
@@ -139,7 +173,7 @@ export default function App() {
         loadStoredJson(STORAGE_KEYS.identity, DEFAULT_USER_IDENTITY).addressAs || 'Sir'
       }. How can I help today?`,
       timestamp: new Date().toISOString(),
-      modelLabel: 'Gemma 3',
+      modelLabel: 'Gemma 4',
       source: 'cloud-gemini',
     },
   ]);
@@ -172,12 +206,14 @@ export default function App() {
   const recognizerRef = useRef<VoiceRecognitionHandle | null>(null);
 
   const permissionMap = useMemo(() => policiesRecordFromRules(permissions), [permissions]);
-  const selectedModel: OpenSourceModelSpec = useMemo(
-    () =>
+  const selectedModel: OpenSourceModelSpec = useMemo(() => {
+    const customList = loadCustomOpenSourceModels();
+    return (
+      customList.find((m) => m.id === selectedModelId) ||
       OPEN_SOURCE_MODEL_CATALOG.find((m) => m.id === selectedModelId) ||
-      OPEN_SOURCE_MODEL_CATALOG[0],
-    [selectedModelId]
-  );
+      OPEN_SOURCE_MODEL_CATALOG[0]
+    );
+  }, [selectedModelId]);
 
   const hasPendingApproval = useMemo(
     () => messages.some((m) => m.pendingAction?.status === 'pending'),
@@ -228,6 +264,22 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEYS.ollamaUrl, JSON.stringify(ollamaUrl));
   }, [ollamaUrl]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.routine, JSON.stringify(routine));
+  }, [routine]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.syllabus, JSON.stringify(syllabus));
+  }, [syllabus]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.ensembleEnabled, JSON.stringify(ensembleEnabled));
+  }, [ensembleEnabled]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.ensembleModels, JSON.stringify(ensembleModelIds));
+  }, [ensembleModelIds]);
 
   // Live Clock + Alarm Monitor
   useEffect(() => {
@@ -597,11 +649,7 @@ export default function App() {
       setMessages((prev) => [...prev, userMsg]);
 
       // 1. Check instant offline device & action intent engine first
-      const wantsSearch =
-        Boolean(options?.forceWebSearch) ||
-        /\b(search|research|look up|latest|news|who won|what happened|current price|weather)\b/i.test(
-          trimmed
-        );
+      const wantsSearch = shouldTriggerLiveSearch(trimmed, options?.forceWebSearch);
 
       if (!wantsSearch) {
         const local = matchLocalIntent(trimmed, {
@@ -675,7 +723,20 @@ export default function App() {
           }
         }
 
-        // Engine A: In-Browser WebGPU Open-Source Model (if cached & selected for offline or network is down)
+        // Engine A: In-Browser WebGPU Open-Source Model (if cached/selected for offline or network is down)
+        if (
+          selectedModel.hfRepo &&
+          (selectedModel.runtime === 'webgpu' || !isOnline) &&
+          browserModelRunner.getLoadedModelId() !== selectedModel.id &&
+          browserModelRunner.getInstalledModelIds().includes(selectedModel.id)
+        ) {
+          try {
+            await browserModelRunner.loadModel(selectedModel, () => {});
+          } catch {
+            // Fall through gracefully
+          }
+        }
+
         if (
           browserModelRunner.getLoadedModelId() === selectedModel.id &&
           (selectedModel.runtime === 'webgpu' || !isOnline)
@@ -699,16 +760,18 @@ export default function App() {
           return;
         }
 
-        // Engine B: Local Ollama 2B Phone/Edge Model
-        if (selectedModel.runtime === 'ollama' && selectedModel.ollamaTag) {
+        // Engine B: Local Ollama 2B / 8B / 20B Phone/Desktop Model
+        if (selectedModel.runtime === 'ollama' && selectedModel.ollamaTag && !ensembleEnabled) {
           const sys = buildShamiaSystemInstruction(
             identity,
             detectedIntent,
             permissionMap,
-            tasks.filter((t) => !t.completed).map((t) => t.title)
+            tasks.filter((t) => !t.completed).map((t) => t.title),
+            routine.filter((r) => !r.completed).map((r) => `${r.timeLabel}: ${r.title}`),
+            syllabus.filter((s) => !s.completed).map((s) => `${s.courseCode} ${s.courseTitle} — ${s.topic}`)
           );
           const promptWithWeb = webSummary
-            ? `${trimmed}\n\n[Live Open Web Context]: ${webSummary}`
+            ? `${trimmed}\n\n[Real-Time Google & Web Context]: ${webSummary}`
             : trimmed;
           const reply = await queryLocalOllama({
             endpoint: ollamaUrl,
@@ -735,8 +798,8 @@ export default function App() {
           return;
         }
 
-        // Engine C: Free Online Open-Source Gemma / Llama / Qwen / SmolLM2 + Live Web Search
-        if (selectedModel.runtime === 'cloud' && isOnline) {
+        // Engine C: Free Online Open-Source Gemma 4 / Qwen 3 / MiniCPM-o / GLM-4 / GPT-OSS 20B / Multi-Model Ensemble + Google Search
+        if ((selectedModel.runtime === 'cloud' || ensembleEnabled) && isOnline) {
           try {
             const res = await fetch('/api/shamia/chat', {
               method: 'POST',
@@ -744,12 +807,19 @@ export default function App() {
               body: JSON.stringify({
                 message: trimmed,
                 modelId: selectedModel.id,
+                modelLabel: selectedModel.name.split('·')[0].trim(),
                 history: messages.slice(-8).map((m) => ({ role: m.role, text: m.text })),
                 identity,
                 detectedIntent,
                 permissions: permissionMap,
                 tasks: tasks.map((t) => ({ title: t.title, completed: t.completed })),
+                routine: routine.filter((r) => !r.completed).map((r) => `${r.timeLabel}: ${r.title}`),
+                syllabus: syllabus
+                  .filter((s) => !s.completed)
+                  .map((s) => `${s.courseCode} ${s.courseTitle}: ${s.topic}`),
                 useResearch: wantsSearch && webSearchEnabled,
+                ensembleEnabled,
+                ensembleModelIds,
               }),
             });
 
@@ -857,19 +927,47 @@ export default function App() {
       batteryCharging,
       batteryLevel,
       deviceControls,
+      ensembleEnabled,
+      ensembleModelIds,
       identity,
       isOnline,
       isThinking,
       messages,
       ollamaUrl,
       permissionMap,
+      routine,
       selectedModel,
       speakReply,
       stageOrExecuteAction,
+      syllabus,
       tasks,
       webSearchEnabled,
     ]
   );
+
+  const handleToggleEnsembleModel = useCallback((modelId: string) => {
+    setEnsembleModelIds((prev) => {
+      if (prev.includes(modelId)) {
+        return prev.length <= 2 ? prev : prev.filter((id) => id !== modelId);
+      }
+      return [...prev, modelId].slice(-4);
+    });
+  }, []);
+
+  const handleBuildRoutineStudyPlan = useCallback(() => {
+    setMobileDrawerOpen(false);
+    const routineList = routine
+      .filter((r) => !r.completed)
+      .map((r) => `${r.timeLabel}: ${r.title}`)
+      .join('; ');
+    const syllabusList = syllabus
+      .filter((s) => !s.completed)
+      .map((s) => `${s.courseCode} ${s.courseTitle} (${s.topic})`)
+      .join('; ');
+    void sendCommand(
+      `Create a focused daily study schedule aligned with my Routine [${routineList || 'Flexible'}] and my University Syllabus [${syllabusList || 'General Review'}]. Keep it clear and practical.`
+    );
+  }, [routine, sendCommand, syllabus]);
 
   const handleToggleListen = useCallback(() => {
     if (isSpeaking) {
@@ -896,14 +994,15 @@ export default function App() {
       updatePermissionPolicy('microphone', 'always');
     }
 
-    const recognizer = createVoiceRecognizer({
-      onInterim: (text) => setInterimVoice(text),
-      onFinal: (finalText) => {
+    const useOfflineWhisper = offlineVoiceRunner.isSttReady();
+    const callbacks = {
+      onInterim: (text: string) => setInterimVoice(text),
+      onFinal: (finalText: string) => {
         setInterimVoice('');
         setIsListening(false);
         void sendCommand(finalText);
       },
-      onError: (reason) => {
+      onError: (reason: string) => {
         setIsListening(false);
         setInterimVoice('');
         setErrorBanner(
@@ -913,11 +1012,17 @@ export default function App() {
         );
       },
       onEnd: () => setIsListening(false),
-    });
+    };
+
+    const recognizer = useOfflineWhisper
+      ? createOfflineWhisperRecognizer(callbacks)
+      : createVoiceRecognizer(callbacks);
 
     if (!recognizer.supported) {
       setErrorBanner(
-        `Speech recognition is not supported in this browser, ${addr}. Text input remains fully active.`
+        !isOnline
+          ? `Install Whisper Tiny.en in the Models tab for offline voice capture, ${addr}.`
+          : `Speech recognition is not supported in this browser, ${addr}. Text input remains fully active.`
       );
       return;
     }
@@ -930,7 +1035,7 @@ export default function App() {
     } catch {
       setIsListening(false);
     }
-  }, [addr, isListening, isSpeaking, permissionMap, sendCommand, updatePermissionPolicy]);
+  }, [addr, isListening, isOnline, isSpeaking, permissionMap, sendCommand, updatePermissionPolicy]);
 
   const handleSubmitForm = (e: FormEvent) => {
     e.preventDefault();
@@ -1003,11 +1108,13 @@ export default function App() {
           <button
             type="button"
             onClick={() => setRightTab('models')}
-            title="Switch open-source model"
+            title="Switch open-source model or ensemble"
             className="hidden sm:inline-flex items-center gap-1.5 min-h-[32px] px-2.5 py-1 rounded-lg bg-[#0D1219] border border-white/[0.08] hover:border-[#38BDF8]/40 text-xs text-[#CBD5E1] hover:text-white transition-colors truncate"
           >
             <Cpu className="w-3.5 h-3.5 text-[#38BDF8] shrink-0" aria-hidden="true" />
-            <span className="truncate">{selectedModel.name}</span>
+            <span className="truncate">
+              {ensembleEnabled ? `Ensemble (${ensembleModelIds.length} Models)` : selectedModel.name}
+            </span>
           </button>
         </div>
 
@@ -1118,7 +1225,9 @@ export default function App() {
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#0B0F15] border border-white/[0.08] text-[11px] text-[#CBD5E1] max-w-[155px]"
               >
                 <Cpu className="w-3 h-3 text-[#38BDF8] shrink-0" aria-hidden="true" />
-                <span className="truncate">{selectedModel.name}</span>
+                <span className="truncate">
+                  {ensembleEnabled ? `Ensemble (${ensembleModelIds.length})` : selectedModel.name}
+                </span>
               </button>
             </div>
 
@@ -1270,18 +1379,33 @@ export default function App() {
             tasks={tasks}
             notes={notes}
             alarms={alarms}
+            routine={routine}
+            syllabus={syllabus}
             nowMs={nowMs}
             permissions={permissions}
             deviceControls={deviceControls}
             selectedModelId={selectedModelId}
             ollamaUrl={ollamaUrl}
             webSearchEnabled={webSearchEnabled}
+            ensembleEnabled={ensembleEnabled}
+            ensembleModelIds={ensembleModelIds}
             onAddTask={(title, priority) => setTasks((prev) => addTaskItem(prev, title, priority))}
             onToggleTask={(id) => setTasks((prev) => toggleTaskItem(prev, id))}
             onClearCompleted={() => setTasks((prev) => clearCompletedTaskItems(prev))}
             onAddNote={(content) => setNotes((prev) => addNoteItem(prev, content))}
             onDeleteNote={(id) => setNotes((prev) => deleteNoteItem(prev, id))}
             onDismissAlarm={(id) => setAlarms((prev) => dismissAlarmItem(prev, id))}
+            onAddRoutine={(timeLabel, title, category) =>
+              setRoutine((prev) => addRoutineItem(prev, timeLabel, title, category))
+            }
+            onToggleRoutine={(id) => setRoutine((prev) => toggleRoutineItem(prev, id))}
+            onDeleteRoutine={(id) => setRoutine((prev) => deleteRoutineItem(prev, id))}
+            onAddSyllabus={(code, title, topic, examNote) =>
+              setSyllabus((prev) => addSyllabusItem(prev, code, title, topic, examNote))
+            }
+            onToggleSyllabus={(id) => setSyllabus((prev) => toggleSyllabusItem(prev, id))}
+            onDeleteSyllabus={(id) => setSyllabus((prev) => deleteSyllabusItem(prev, id))}
+            onBuildRoutineStudyPlan={handleBuildRoutineStudyPlan}
             onUpdatePermission={updatePermissionPolicy}
             onRequestToggleControl={(setting, nextVal) => {
               const map = {
@@ -1334,6 +1458,8 @@ export default function App() {
             onSelectModel={(spec) => setSelectedModelId(spec.id)}
             onChangeOllamaUrl={setOllamaUrl}
             onToggleWebSearch={setWebSearchEnabled}
+            onToggleEnsemble={setEnsembleEnabled}
+            onToggleEnsembleModel={handleToggleEnsembleModel}
             activeTab={rightTab}
             onTabChange={setRightTab}
           />
@@ -1367,12 +1493,16 @@ export default function App() {
                 tasks={tasks}
                 notes={notes}
                 alarms={alarms}
+                routine={routine}
+                syllabus={syllabus}
                 nowMs={nowMs}
                 permissions={permissions}
                 deviceControls={deviceControls}
                 selectedModelId={selectedModelId}
                 ollamaUrl={ollamaUrl}
                 webSearchEnabled={webSearchEnabled}
+                ensembleEnabled={ensembleEnabled}
+                ensembleModelIds={ensembleModelIds}
                 onAddTask={(title, priority) =>
                   setTasks((prev) => addTaskItem(prev, title, priority))
                 }
@@ -1381,6 +1511,17 @@ export default function App() {
                 onAddNote={(content) => setNotes((prev) => addNoteItem(prev, content))}
                 onDeleteNote={(id) => setNotes((prev) => deleteNoteItem(prev, id))}
                 onDismissAlarm={(id) => setAlarms((prev) => dismissAlarmItem(prev, id))}
+                onAddRoutine={(timeLabel, title, category) =>
+                  setRoutine((prev) => addRoutineItem(prev, timeLabel, title, category))
+                }
+                onToggleRoutine={(id) => setRoutine((prev) => toggleRoutineItem(prev, id))}
+                onDeleteRoutine={(id) => setRoutine((prev) => deleteRoutineItem(prev, id))}
+                onAddSyllabus={(code, title, topic, examNote) =>
+                  setSyllabus((prev) => addSyllabusItem(prev, code, title, topic, examNote))
+                }
+                onToggleSyllabus={(id) => setSyllabus((prev) => toggleSyllabusItem(prev, id))}
+                onDeleteSyllabus={(id) => setSyllabus((prev) => deleteSyllabusItem(prev, id))}
+                onBuildRoutineStudyPlan={handleBuildRoutineStudyPlan}
                 onUpdatePermission={updatePermissionPolicy}
                 onRequestToggleControl={(setting, nextVal) => {
                   setMobileDrawerOpen(false);
@@ -1437,6 +1578,8 @@ export default function App() {
                 onSelectModel={(spec) => setSelectedModelId(spec.id)}
                 onChangeOllamaUrl={setOllamaUrl}
                 onToggleWebSearch={setWebSearchEnabled}
+                onToggleEnsemble={setEnsembleEnabled}
+                onToggleEnsembleModel={handleToggleEnsembleModel}
                 activeTab={rightTab}
                 onTabChange={setRightTab}
               />

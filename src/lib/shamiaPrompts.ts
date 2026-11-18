@@ -9,7 +9,9 @@ export function buildShamiaSystemInstruction(
   identity: UserIdentityProfile,
   detectedIntent: ConversationalIntent,
   permissions: Record<PermissionCapability, PermissionPolicy>,
-  tasksSummary: string[]
+  tasksSummary: string[],
+  routineSummary: string[] = [],
+  syllabusSummary: string[] = []
 ): string {
   const addressAs = identity.addressAs.trim() || 'Sir';
   const fullName = identity.fullName.trim() || 'Md Shabbir Mia';
@@ -20,6 +22,10 @@ export function buildShamiaSystemInstruction(
 
   const activeTasksText =
     tasksSummary.length > 0 ? tasksSummary.slice(0, 5).join('; ') : 'No pending tasks.';
+  const activeRoutineText =
+    routineSummary.length > 0 ? routineSummary.slice(0, 6).join('; ') : 'No routine blocks scheduled.';
+  const activeSyllabusText =
+    syllabusSummary.length > 0 ? syllabusSummary.slice(0, 6).join('; ') : 'No syllabus topics active.';
 
   const corePersona = [
     `You are S.H.A.M.I.A. (Smart Human-aligned Assistant & Mindful Interactive Aid), created exclusively for ${fullName}.`,
@@ -28,6 +34,8 @@ export function buildShamiaSystemInstruction(
     `Current Permission Vault: [${permissionSummary}].`,
     `PERMISSION GOVERNANCE: Never claim you executed a sensitive device action (dialing a number, opening an app, toggling phone hardware, playing music, setting an alarm) without invoking the appropriate tool. If a capability is "deny", respectfully inform ${addressAs} that permission is denied and do not invoke the tool. If "ask", invoke the tool to stage confirmation.`,
     `Active Priorities for ${addressAs}: ${activeTasksText}`,
+    `Daily Routine: ${activeRoutineText}`,
+    `University Syllabus Focus: ${activeSyllabusText}`,
   ].join('\n');
 
   if (detectedIntent === 'english-tutor') {

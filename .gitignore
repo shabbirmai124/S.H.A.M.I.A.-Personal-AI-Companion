@@ -11,5 +11,8 @@ coverage/
 *.p12
 secrets/
 .playwright-cli/
+.aistudio/
+*.local
+*.secret*
 server.js
 firebase-applet-config.json

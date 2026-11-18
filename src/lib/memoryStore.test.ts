@@ -3,10 +3,18 @@ import assert from 'node:assert/strict';
 import {
   addAlarmItem,
   addNoteItem,
+  addRoutineItem,
+  addSyllabusItem,
   addTaskItem,
   clearCompletedTaskItems,
+  deleteRoutineItem,
+  deleteSyllabusItem,
   dismissAlarmItem,
   formatCountdown,
+  OPEN_SOURCE_MODEL_CATALOG,
+  OPEN_SOURCE_VOICE_MODELS,
+  toggleRoutineItem,
+  toggleSyllabusItem,
   toggleTaskItem,
 } from './memoryStore';
 import { extractCoachingTip } from './shamiaPrompts';
@@ -42,4 +50,37 @@ test('extractCoachingTip strips structured tag and parses tip cleanly', () => {
   const result = extractCoachingTip(raw);
   assert.equal(result.cleanText, 'Splendid effort, Sir. Tell me more about your project.');
   assert.equal(result.coachingTip?.naturalPhrase, 'I have been focusing on');
+});
+
+test('model catalog includes Gemma 4, 20B, Chinese under-10B flagships, DeepSeek 2B Offline Core, and offline voice models', () => {
+  assert.ok(OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'gemma-4-free'));
+  assert.ok(OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'qwen3-8b-chinese'));
+  assert.ok(OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'minicpm-o-26'));
+  assert.ok(OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'glm-4-9b'));
+  assert.ok(
+    OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'gpt-oss-20b-free' && m.params.includes('20B'))
+  );
+  assert.ok(
+    OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'offline-core' && m.params.includes('2B'))
+  );
+  assert.ok(OPEN_SOURCE_VOICE_MODELS.some((v) => v.id === 'whisper-tiny-en' && v.kind === 'stt'));
+  assert.ok(OPEN_SOURCE_VOICE_MODELS.some((v) => v.id === 'whisper-small-en' && v.kind === 'stt'));
+  assert.ok(OPEN_SOURCE_VOICE_MODELS.some((v) => v.id === 'kokoro-82m-tts' && v.kind === 'tts'));
+});
+
+test('routine and university syllabus reducers add, toggle, and delete items cleanly', () => {
+  let routine = addRoutineItem([], '08:00 AM', 'Algorithms Lecture', 'class', 'r1');
+  assert.equal(routine.length, 1);
+  routine = toggleRoutineItem(routine, 'r1');
+  assert.equal(routine[0].completed, true);
+  routine = deleteRoutineItem(routine, 'r1');
+  assert.equal(routine.length, 0);
+
+  let syllabus = addSyllabusItem([], 'PHY-202', 'Modern Physics', 'Quantum Mechanics Unit 1', undefined, 's1');
+  assert.equal(syllabus.length, 1);
+  assert.equal(syllabus[0].courseCode, 'PHY-202');
+  syllabus = toggleSyllabusItem(syllabus, 's1');
+  assert.equal(syllabus[0].completed, true);
+  syllabus = deleteSyllabusItem(syllabus, 's1');
+  assert.equal(syllabus.length, 0);
 });

@@ -48,13 +48,36 @@ export interface OpenSourceModelSpec {
   params: string;
   sizeLabel: string;
   minRamGb: number;
+  chipsetNote?: string;
   runtime: 'built-in' | 'webgpu' | 'ollama' | 'cloud';
   hfRepo?: string;
   ollamaTag?: string;
-  family?: 'gemma' | 'llama' | 'qwen' | 'smollm' | 'offline';
+  family?:
+    | 'gemma'
+    | 'llama'
+    | 'qwen'
+    | 'smollm'
+    | 'deepseek'
+    | 'phi'
+    | 'gpt-oss'
+    | 'glm'
+    | 'minicpm'
+    | 'offline'
+    | 'custom';
   freeOnlineAvailable?: boolean;
   summary: string;
   smartphoneReady: boolean;
+}
+
+export interface OfflineVoiceModelSpec {
+  id: string;
+  name: string;
+  kind: 'stt' | 'tts';
+  provider: string;
+  sizeLabel: string;
+  minRamGb: number;
+  hfRepo: string;
+  summary: string;
 }
 
 export interface PermissionRule {
@@ -135,6 +158,23 @@ export interface MusicTrack {
   bpm: number;
   baseFreq: number;
   chord: number[];
+}
+
+export interface RoutineItem {
+  id: string;
+  timeLabel: string;
+  title: string;
+  category: 'routine' | 'class' | 'study';
+  completed: boolean;
+}
+
+export interface SyllabusItem {
+  id: string;
+  courseCode: string;
+  courseTitle: string;
+  topic: string;
+  examNote?: string;
+  completed: boolean;
 }
 
 export type CoreVisualState =

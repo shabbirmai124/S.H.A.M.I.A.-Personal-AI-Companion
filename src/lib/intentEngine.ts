@@ -147,6 +147,15 @@ export function detectConversationalIntent(input: string): ConversationalIntent 
   return 'general';
 }
 
+export function shouldTriggerLiveSearch(input: string, forceWebSearch?: boolean): boolean {
+  if (forceWebSearch) return true;
+  const trimmed = input.trim();
+  if (!trimmed) return false;
+  return /\b(search|research|look up|google|latest|news|who won|what happened|current price|weather|real-?time|4nm|6nm|3nm|processor|chipset|snapdragon|dimensity|exynos|tensor|bionic|which phones?|what phones?|smartphones?|compare|specs|specification|benchmark|today|2025|2026)\b/i.test(
+    trimmed
+  );
+}
+
 export function parseAlarmRequest(
   input: string,
   now: Date
