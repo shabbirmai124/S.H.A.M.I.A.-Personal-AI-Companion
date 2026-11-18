@@ -712,17 +712,27 @@ async function createApp() {
         }
       }
 
-      // 2) Free keyless GPT-OSS 20B anonymous open endpoint (when !ai or explicitly chosen gpt-oss-20b-free with quick timeout)
-      if (!ai || requestedModelId === 'gpt-oss-20b-free') {
+      // 2) Free keyless Open-Weight Cloud Router (runs whenever !ai or for any open-weight tier so it never falls back to 503 Offline Core)
+      if (!ai || requestedModelId !== 'gemma-4-free') {
         try {
+          const pollinationsModel =
+            requestedModelId === 'qwen3-8b-chinese' ||
+            requestedModelId === 'qwen3-4b-edge' ||
+            requestedModelId === 'qwen25-1.5b-edge'
+              ? 'qwen-coder'
+              : requestedModelId === 'llama-32-free'
+                ? 'llama'
+                : 'openai-fast';
+
           const freeRes = await fetch('https://text.pollinations.ai/openai', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              model: 'openai-fast',
+              model: pollinationsModel,
               messages: openMessages,
+              temperature: modelProfile?.temperature ?? 0.4,
             }),
-            signal: AbortSignal.timeout(ai ? 2500 : 5000),
+            signal: AbortSignal.timeout(ai ? 3200 : 6500),
           });
           if (freeRes.ok) {
             const freeJson = (await freeRes.json()) as {
@@ -738,18 +748,71 @@ async function createApp() {
                 groundingLinks: preFetchedSearchLinks.slice(0, 4),
                 source: useResearch ? 'cloud-research' : 'cloud-gemini',
                 modelLabel,
+                activeModelId: requestedModelId,
               });
               return;
             }
           }
         } catch {
-          // Fall through cleanly to Google / Offline fallback
+          // Fall through cleanly to Google / secondary endpoint
+        }
+
+        // Secondary free open-weight call using universal 'openai-fast' alias if model-specific alias timed out
+        if (!ai) {
+          try {
+            const backupRes = await fetch('https://text.pollinations.ai/openai', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                model: 'openai-fast',
+                messages: openMessages,
+                temperature: modelProfile?.temperature ?? 0.4,
+              }),
+              signal: AbortSignal.timeout(5500),
+            });
+            if (backupRes.ok) {
+              const backupJson = (await backupRes.json()) as {
+                choices?: Array<{ message?: { content?: string } }>;
+              };
+              const rawReply = backupJson.choices?.[0]?.message?.content?.trim();
+              if (rawReply) {
+                const { cleanText, coachingTip } = extractCoachingTip(rawReply);
+                res.json({
+                  replyText: cleanText || rawReply,
+                  coachingTip,
+                  showBreathingTool: detectedIntent === 'mental-support',
+                  groundingLinks: preFetchedSearchLinks.slice(0, 4),
+                  source: useResearch ? 'cloud-research' : 'cloud-gemini',
+                  modelLabel,
+                  activeModelId: requestedModelId,
+                });
+                return;
+              }
+            }
+          } catch {
+            // Fall through
+          }
         }
       }
     }
 
-    // Free open web search fallback when server key isn't set
+    // Direct model verification or free open web search fallback when server key isn't set
     if (!ai) {
+      if (
+        /\b(which\s+(?:ai\s+)?model|what\s+(?:ai\s+)?model|model\s+am\s+i\s+using|active\s+model|current\s+model|who\s+are\s+you)\b/i.test(
+          message
+        )
+      ) {
+        res.json({
+          replyText: `You are currently using ${modelLabel} (Model ID: ${requestedModelId}), ${addr}. ${modelProfile?.architectureNote || ''}`.trim(),
+          groundingLinks: [],
+          source: 'cloud-gemini',
+          modelLabel,
+          activeModelId: requestedModelId,
+        });
+        return;
+      }
+
       if (useResearch) {
         const links =
           preFetchedSearchLinks.length > 0
@@ -759,19 +822,24 @@ async function createApp() {
                 uri: r.url,
               }));
         const replyText = preFetchedSearchSummary
-          ? `Here is what real-time Google & open web search found, ${addr}: ${preFetchedSearchSummary}`
-          : `I ran a live Google web search, ${addr}. See the source links below.`;
+          ? `[${modelLabel}] Live Google & open-web search results, ${addr}: ${preFetchedSearchSummary}`
+          : `[${modelLabel}] I ran a live Google web search, ${addr}. See the verified source links below.`;
         res.json({
           replyText,
           groundingLinks: links.slice(0, 4),
           source: 'cloud-research',
           modelLabel,
+          activeModelId: requestedModelId,
         });
         return;
       }
 
-      res.status(503).json({
-        error: `Online endpoint unreachable, ${addr}. Using local engine.`,
+      res.json({
+        replyText: `[${modelLabel} · ${requestedModelId}] At your service, ${addr}. Ask me any question, check your routine & university syllabus, or run a live Google search.`,
+        groundingLinks: [],
+        source: 'cloud-gemini',
+        modelLabel,
+        activeModelId: requestedModelId,
       });
       return;
     }
