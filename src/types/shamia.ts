@@ -1,5 +1,7 @@
 export type ConversationalIntent = 'general' | 'english-tutor' | 'mental-support' | 'device-action';
 
+export type ShamiaVoiceGender = 'female' | 'male';
+
 export type AIEngineTier = 'offline-core' | 'webgpu-local' | 'ollama-local' | 'cloud-free';
 
 export type PermissionCapability =
@@ -27,6 +29,8 @@ export type DeviceActionType =
   | 'complete_task'
   | 'clear_completed_tasks'
   | 'add_note';
+
+export type VoiceGender = 'female' | 'male';
 
 export interface UserIdentityProfile {
   fullName: string;
@@ -183,3 +187,7 @@ export type CoreVisualState =
   | 'thinking'
   | 'speaking'
   | 'awaiting-permission';
+
+export type VoicePersona = 'female' | 'male';
+
+

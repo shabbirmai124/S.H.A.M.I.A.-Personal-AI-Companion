@@ -29,6 +29,7 @@ data class ShamiaUiState(
     val customModels: List<OpenSourceModelSpec> = emptyList(),
     val installedModelIds: Set<String> = setOf("offline-core"),
     val installedVoiceIds: Set<String> = emptySet(),
+    val loadingProgress: Map<String, Int> = emptyMap(),
     val ollamaEndpoint: String = "http://127.0.0.1:11434",
     val serverBaseUrl: String = "",
     val ollamaTestStatus: String = "",
@@ -175,7 +176,7 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
         val shouldSearch = IntentEngine.shouldTriggerLiveSearch(text, state.useResearch)
         val activeSpec = state.selectedModel
 
-        if (activeSpec.isBuiltInOffline && !state.ensembleEnabled && !state.useResearch) {
+        if (activeSpec.isBuiltInOffline && !state.ensembleEnabled && !shouldSearch) {
             val (offlineReply, tip) = IntentEngine.generateOfflineCompanionReply(
                 text, addr, state.routine, state.syllabus
             )
@@ -194,7 +195,7 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
 
-        // 3. Remote Server Backend -> Local Termux/Ollama (or Ensemble) -> Live Google RSS + DuckDuckGo + Wikipedia -> Offline Fallback
+        // 3. Paired Server Backend -> Local Termux/Ollama -> Direct Free Cloud Open-Weight + Live Google Search -> Offline DeepSeek 2B Fallback
         _ui.update { it.copy(coreState = CoreVisualState.THINKING) }
         viewModelScope.launch {
             var replyText = ""
@@ -224,7 +225,7 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
                 }
             }
 
-            // Local Termux/Ollama + Real-Time Google Search
+            // Local Termux/Ollama + Free Cloud Open-Weight + Real-Time Google Search
             if (replyText.isEmpty()) {
                 if (state.ensembleEnabled) {
                     val (merged, searchLinks, label) = OpenSourceAiRepository.runEnsembleLocalAndWeb(
@@ -263,15 +264,29 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
 
                     if (!localModelOut.isNullOrBlank()) {
                         replyText = localModelOut
-                    } else if (webSummary.isNotBlank()) {
-                        replyText = "Live Google & open-web search results, $addr: $webSummary"
-                        usedModel = "${activeSpec.name.substringBefore("·").trim()} + Google Search"
                     } else {
-                        val (offlineFallback, _) = IntentEngine.generateOfflineCompanionReply(
-                            text, addr, state.routine, state.syllabus
+                        // Direct Free Cloud Open-Weight Inference from Android phone
+                        val cloudOut = OpenSourceAiRepository.queryFreeCloudOpenWeight(
+                            modelSpec = activeSpec,
+                            prompt = text,
+                            addressAs = addr,
+                            routine = state.routine,
+                            syllabus = state.syllabus,
+                            webContext = webSummary
                         )
-                        replyText = offlineFallback
-                        usedModel = "DeepSeek 2B · Offline Core"
+                        if (!cloudOut.isNullOrBlank()) {
+                            replyText = cloudOut
+                            usedModel = if (links.isNotEmpty()) "${activeSpec.name.substringBefore("·").trim()} + Google Search" else activeSpec.name
+                        } else if (webSummary.isNotBlank()) {
+                            replyText = "Live Google & open-web search results, $addr: $webSummary"
+                            usedModel = "${activeSpec.name.substringBefore("·").trim()} + Google Search"
+                        } else {
+                            val (offlineFallback, _) = IntentEngine.generateOfflineCompanionReply(
+                                text, addr, state.routine, state.syllabus
+                            )
+                            replyText = offlineFallback
+                            usedModel = "DeepSeek 2B · Offline Core"
+                        }
                     }
                 }
             }
@@ -320,7 +335,7 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
                     HudMessage(
                         id = "a-${System.currentTimeMillis()}",
                         isUser = false,
-                        text = "$execMsg",
+                        text = execMsg,
                         timestampLabel = nowLabel(),
                         pendingAction = action.copy(status = ActionStatus.APPROVED)
                     )
@@ -431,10 +446,14 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun toggleVoiceListening() {
+    fun toggleVoiceListening(onNeedRuntimeMicPermission: () -> Unit = {}) {
         val micPolicy = IntentEngine.evaluatePermission(_ui.value.permissions, PermissionCapability.MICROPHONE)
         if (micPolicy == PermissionPolicy.DENY) {
-            _ui.update { it.copy(statusBanner = "Microphone blocked in Permission Vault.") }
+            _ui.update { it.copy(statusBanner = "Microphone blocked in Permission Vault. Switch it to Ask or Allow.") }
+            return
+        }
+        if (!voiceEngine.hasMicPermission()) {
+            onNeedRuntimeMicPermission()
             return
         }
         if (_ui.value.coreState == CoreVisualState.LISTENING) {
@@ -442,8 +461,10 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
             _ui.update { it.copy(coreState = CoreVisualState.IDLE, liveTranscript = "") }
             return
         }
+        val preferOfflineWhisper = _ui.value.installedVoiceIds.any { it.startsWith("whisper-") }
         _ui.update { it.copy(coreState = CoreVisualState.LISTENING, liveTranscript = "Listening...") }
         voiceEngine.startListening(
+            preferOffline = preferOfflineWhisper,
             onPartial = { partial -> _ui.update { it.copy(liveTranscript = partial) } },
             onFinal = { finalText ->
                 _ui.update { it.copy(coreState = CoreVisualState.IDLE, liveTranscript = "") }
@@ -467,22 +488,84 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
 
     fun selectModel(modelId: String) {
         store.saveSelectedModelId(modelId)
-        _ui.update { it.copy(selectedModelId = modelId) }
+        val spec = _ui.value.allModels.find { it.id == modelId }
+        _ui.update {
+            it.copy(
+                selectedModelId = modelId,
+                statusBanner = if (spec != null) "Active Model: ${spec.name}" else null
+            )
+        }
     }
 
-    fun toggleInstallModel(modelId: String) {
-        val next = _ui.value.installedModelIds.toMutableSet()
+    fun installOrRemoveModel(modelId: String) {
         if (modelId == "offline-core") return
-        if (next.contains(modelId)) next.remove(modelId) else next.add(modelId)
-        store.saveInstalledModelIds(next)
-        _ui.update { it.copy(installedModelIds = next) }
+        val currentInstalled = _ui.value.installedModelIds
+        if (currentInstalled.contains(modelId)) {
+            val next = currentInstalled - modelId
+            store.saveInstalledModelIds(next)
+            _ui.update { it.copy(installedModelIds = next, statusBanner = "Removed local cache for $modelId.") }
+            return
+        }
+
+        val spec = _ui.value.allModels.find { it.id == modelId } ?: return
+        viewModelScope.launch {
+            _ui.update { it.copy(loadingProgress = it.loadingProgress + (modelId to 5)) }
+            OpenSourceAiRepository.downloadAndPrepareModel(
+                context = getApplication(),
+                modelId = modelId,
+                hfRepo = spec.hfRepo,
+                ollamaTag = spec.ollamaTag,
+                ollamaEndpoint = _ui.value.ollamaEndpoint,
+                onProgress = { pct ->
+                    _ui.update { it.copy(loadingProgress = it.loadingProgress + (modelId to pct)) }
+                }
+            )
+            val next = _ui.value.installedModelIds + modelId
+            store.saveInstalledModelIds(next)
+            store.saveSelectedModelId(modelId)
+            _ui.update {
+                it.copy(
+                    installedModelIds = next,
+                    selectedModelId = modelId,
+                    loadingProgress = it.loadingProgress - modelId,
+                    statusBanner = "${spec.name} loaded & ready."
+                )
+            }
+        }
     }
 
-    fun toggleInstallVoiceModel(voiceId: String) {
-        val next = _ui.value.installedVoiceIds.toMutableSet()
-        if (next.contains(voiceId)) next.remove(voiceId) else next.add(voiceId)
-        store.saveInstalledVoiceIds(next)
-        _ui.update { it.copy(installedVoiceIds = next) }
+    fun installOrRemoveVoiceModel(voiceId: String) {
+        val currentInstalled = _ui.value.installedVoiceIds
+        if (currentInstalled.contains(voiceId)) {
+            val next = currentInstalled - voiceId
+            store.saveInstalledVoiceIds(next)
+            _ui.update { it.copy(installedVoiceIds = next) }
+            return
+        }
+
+        val vmSpec = OpenSourceAiRepository.VOICE_MODELS.find { it.id == voiceId } ?: return
+        viewModelScope.launch {
+            _ui.update { it.copy(loadingProgress = it.loadingProgress + (voiceId to 10)) }
+            OpenSourceAiRepository.downloadAndPrepareModel(
+                context = getApplication(),
+                modelId = voiceId,
+                hfRepo = vmSpec.hfRepo,
+                ollamaTag = null,
+                ollamaEndpoint = "",
+                onProgress = { pct ->
+                    _ui.update { it.copy(loadingProgress = it.loadingProgress + (voiceId to pct)) }
+                }
+            )
+            val next = _ui.value.installedVoiceIds + voiceId
+            store.saveInstalledVoiceIds(next)
+            _ui.update {
+                it.copy(
+                    installedVoiceIds = next,
+                    loadingProgress = it.loadingProgress - voiceId,
+                    statusBanner = "${vmSpec.name} installed for offline voice."
+                )
+            }
+        }
     }
 
     fun addCustomModel(name: String, hfOrOllama: String, minRamGb: Int) {
@@ -504,18 +587,9 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
             isCustom = true
         )
         val updated = _ui.value.customModels + spec
-        val installed = _ui.value.installedModelIds + spec.id
         store.saveCustomModels(updated)
-        store.saveInstalledModelIds(installed)
-        store.saveSelectedModelId(spec.id)
-        _ui.update {
-            it.copy(
-                customModels = updated,
-                installedModelIds = installed,
-                selectedModelId = spec.id,
-                statusBanner = "Custom model $cleanName installed & active."
-            )
-        }
+        _ui.update { it.copy(customModels = updated) }
+        installOrRemoveModel(spec.id)
     }
 
     fun toggleEnsembleEnabled() {
@@ -552,7 +626,7 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
             val msg = if (tags.isNotEmpty()) {
                 "Connected! Found models: ${tags.take(5).joinToString(", ")}"
             } else {
-                "No local Ollama server responding at $url (start Termux/PC Ollama with OLLAMA_ORIGINS=* ollama serve)."
+                "No local Ollama server at $url (Cloud open-weight inference remains active automatically)."
             }
             _ui.update { it.copy(ollamaTestStatus = msg) }
         }

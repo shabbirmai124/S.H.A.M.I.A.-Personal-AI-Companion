@@ -61,18 +61,20 @@ let drillCursor = 0;
 export function generateOfflineCompanionReply(
   input: string,
   addressAs: string,
-  fullName: string
+  fullName: string,
+  activeModelId = 'offline-core',
+  activeModelLabel = 'DeepSeek 2B · S.H.A.M.I.A. Offline Core'
 ): OfflineCompanionReply {
   const addr = addressAs.trim() || 'Sir';
   const trimmed = input.trim();
   const lower = trimmed.toLowerCase();
   const intent = detectConversationalIntent(trimmed);
 
-  // 1. Identity / Name meaning question
-  if (/\b(your name|who are you|what is shamia|meaning of shamia|shamia)\b/i.test(lower)) {
+  // 1. Identity / Name / Active Model question
+  if (/\b(your name|who are you|what is shamia|meaning of shamia|shamia|which model|what model)\b/i.test(lower)) {
     return {
       intent: 'general',
-      text: `I am S.H.A.M.I.A.—Smart Human-aligned Assistant & Mindful Interactive Aid—named in honor of ${fullName}, ${addr}. I am here to manage your device with strict permission control, practice spoken English with you, and support you through busy or quiet days.`,
+      text: `[${activeModelLabel} · ID: ${activeModelId}] I am S.H.A.M.I.A.—Smart Human-aligned Assistant & Mindful Interactive Aid—created by and for ${fullName}, ${addr}. I am currently running on ${activeModelLabel} (${activeModelId}).`,
     };
   }
 
@@ -138,7 +140,7 @@ export function generateOfflineCompanionReply(
       coachingTip: {
         tip: 'Tip: Speak at a calm pace and connect ideas with "firstly", "on top of that", or "as a result".',
       },
-      text: `I am ready to practice with you offline, ${addr}. ${prompt}`,
+      text: `[${activeModelLabel}] Ready to practice with you, ${addr}. ${prompt}`,
     };
   }
 
@@ -147,8 +149,8 @@ export function generateOfflineCompanionReply(
     return {
       intent: 'general',
       text: /how are you|how's it going|what's up/i.test(lower)
-        ? `Doing well, ${addr}—thank you for asking. How is your day going, and what would you like to work on?`
-        : `Hello, ${addr}. How can I assist you right now?`,
+        ? `[${activeModelLabel}] Running smoothly, ${addr}—thank you for asking. What would you like to work on?`
+        : `[${activeModelLabel}] Hello, ${addr}. How can I assist you right now?`,
     };
   }
 
@@ -162,7 +164,7 @@ export function generateOfflineCompanionReply(
   if (/\b(what can you do|help me|capabilities|features)\b/i.test(lower)) {
     return {
       intent: 'general',
-      text: `I can chat naturally, coach your spoken English in real time, search the web, manage your priorities and alarms, and handle phone controls behind your Permission Vault, ${addr}.`,
+      text: `[${activeModelLabel}] I can chat naturally, coach your spoken English in real time, search Google live, plan your daily routine & university syllabus, and manage phone controls behind your Permission Vault, ${addr}.`,
     };
   }
 
@@ -189,6 +191,7 @@ export function generateOfflineCompanionReply(
 
   return {
     intent: 'general',
-    text: `I hear you, ${addr}. Could you share a little more detail so I can give you a clearer answer?`,
+    text: `[${activeModelLabel} · ${activeModelId}] Standing by offline, ${addr}. Share your question, study topic, or phone command and I will handle it right away.`,
   };
 }
+

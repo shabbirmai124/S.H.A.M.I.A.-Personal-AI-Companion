@@ -52,6 +52,14 @@ fun ShamiaHudScreen(vm: ShamiaViewModel) {
     var inputText by remember { mutableStateOf("") }
     var showIdentityDialog by remember { mutableStateOf(false) }
 
+    val micPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            vm.toggleVoiceListening()
+        }
+    }
+
     Scaffold(
         containerColor = ObsidianVoid,
         topBar = {
@@ -71,7 +79,13 @@ fun ShamiaHudScreen(vm: ShamiaViewModel) {
                         onTextChange = { inputText = it },
                         coreState = state.coreState,
                         liveTranscript = state.liveTranscript,
-                        onToggleMic = { vm.toggleVoiceListening() },
+                        onToggleMic = {
+                            vm.toggleVoiceListening(
+                                onNeedRuntimeMicPermission = {
+                                    micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                                }
+                            )
+                        },
                         onSend = {
                             val msg = inputText
                             inputText = ""

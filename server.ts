@@ -13,7 +13,11 @@ import {
   ThinkingLevel,
   Type,
 } from '@google/genai';
-import { buildShamiaSystemInstruction, extractCoachingTip } from './src/lib/shamiaPrompts.ts';
+import {
+  buildShamiaSystemInstruction,
+  extractCoachingTip,
+  MODEL_DISTINCT_PROFILES,
+} from './src/lib/shamiaPrompts.ts';
 import {
   resolveSupportedApp,
   shouldTriggerLiveSearch,
@@ -43,11 +47,6 @@ function getGeminiClient(): GoogleGenAI | null {
   }
   return new GoogleGenAI({
     apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
   });
 }
 
@@ -363,10 +362,10 @@ async function createApp() {
         : Boolean(body.useResearch) || shouldTriggerLiveSearch(message);
 
     const detectedIntent: ConversationalIntent = body.detectedIntent || 'general';
-    const requestedModelId = body.modelId || 'gemma-4-free';
+    const requestedModelId = (body.modelId || 'gemma-4-free').trim();
 
     const MODEL_LABELS: Record<string, string> = {
-      'gemma-4-free': 'Gemma 4',
+      'gemma-4-free': 'Gemma 4 · Real-Time Search',
       'qwen3-8b-chinese': 'Qwen 3 8B',
       'qwen3-4b-edge': 'Qwen 3 4B',
       'minicpm-o-26': 'MiniCPM-o 2.6 8B',
@@ -380,9 +379,18 @@ async function createApp() {
       'smollm2-1.7b-edge': 'SmolLM2 1.7B',
       'qwen25-0.5b-webgpu': 'Qwen 2.5 0.5B',
       'smollm2-360m-webgpu': 'SmolLM2 360M',
-      'offline-core': 'DeepSeek 2B',
+      'offline-core': 'DeepSeek 2B · Offline Core',
     };
-    const modelLabel = body.modelLabel?.trim() || MODEL_LABELS[requestedModelId] || 'Gemma 4';
+    const modelProfile = MODEL_DISTINCT_PROFILES[requestedModelId];
+    const modelLabel =
+      MODEL_LABELS[requestedModelId] ||
+      modelProfile?.displayName ||
+      body.modelLabel?.trim() ||
+      requestedModelId;
+
+    console.log(
+      `[S.H.A.M.I.A. Router] Executing active modelId="${requestedModelId}" (${modelLabel}) | research=${useResearch} | ensemble=${Boolean(body.ensembleEnabled)}`
+    );
 
     const permissions: Record<PermissionCapability, PermissionPolicy> = {
       dial_contact: body.permissions?.dial_contact ?? 'ask',
@@ -404,7 +412,9 @@ async function createApp() {
       permissions,
       pendingTasks,
       Array.isArray(body.routine) ? body.routine : [],
-      Array.isArray(body.syllabus) ? body.syllabus : []
+      Array.isArray(body.syllabus) ? body.syllabus : [],
+      requestedModelId,
+      modelLabel
     );
 
     const ai = getGeminiClient();
@@ -748,6 +758,9 @@ async function createApp() {
         const gemmaRes = await ai.models.generateContent({
           model: 'gemma-3-4b-it',
           contents: gemmaContents,
+          config: {
+            temperature: modelProfile?.temperature ?? 0.45,
+          },
         });
         const rawGemma = gemmaRes.text?.trim();
         if (rawGemma) {
@@ -759,6 +772,7 @@ async function createApp() {
             groundingLinks: [],
             source: 'cloud-gemini',
             modelLabel,
+            activeModelId: requestedModelId,
           });
           return;
         }
@@ -767,8 +781,15 @@ async function createApp() {
       }
     }
 
+    const isHeavyReasoningModel =
+      requestedModelId === 'gpt-oss-20b-free' ||
+      requestedModelId === 'qwen3-8b-chinese' ||
+      requestedModelId === 'glm-4-9b' ||
+      requestedModelId === 'gemma-4-free' ||
+      requestedModelId === 'offline-core';
+
     const model =
-      useResearch || detectedIntent !== 'general'
+      useResearch || detectedIntent !== 'general' || isHeavyReasoningModel
         ? 'gemini-4-hydrogen'
         : 'gemini-3.1-flash-lite';
 
@@ -783,6 +804,7 @@ async function createApp() {
       const config: Record<string, unknown> = {
         systemInstruction,
         tools,
+        temperature: modelProfile?.temperature ?? 0.4,
       };
 
       if (useResearch) {
@@ -791,7 +813,10 @@ async function createApp() {
 
       if (model === 'gemini-4-hydrogen') {
         config.thinkingConfig = {
-          thinkingLevel: useResearch ? ThinkingLevel.HIGH : ThinkingLevel.LOW,
+          thinkingLevel:
+            useResearch || requestedModelId === 'gpt-oss-20b-free'
+              ? ThinkingLevel.HIGH
+              : ThinkingLevel.LOW,
         };
       } else {
         config.thinkingConfig = {
@@ -1017,6 +1042,7 @@ async function createApp() {
         groundingLinks: groundingLinks.slice(0, 4),
         source: useResearch ? 'cloud-research' : 'cloud-gemini',
         modelLabel,
+        activeModelId: requestedModelId,
       });
     } catch (err: unknown) {
       const status =

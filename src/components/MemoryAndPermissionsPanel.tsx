@@ -12,6 +12,7 @@ import type {
   RoutineItem,
   SyllabusItem,
   TaskItem,
+  VoicePersona,
 } from '../types/shamia';
 import { DeviceControlDeck } from './DeviceControlDeck';
 import { OpenSourceModelHub } from './OpenSourceModelHub';
@@ -30,6 +31,8 @@ interface MemoryAndPermissionsPanelProps {
   webSearchEnabled: boolean;
   ensembleEnabled: boolean;
   ensembleModelIds: string[];
+  voicePersona?: VoicePersona;
+  onChangeVoicePersona?: (persona: VoicePersona) => void;
   onAddTask: (title: string, priority: 'high' | 'normal') => void;
   onToggleTask: (id: string) => void;
   onClearCompleted: () => void;
@@ -76,6 +79,8 @@ export function MemoryAndPermissionsPanel({
   webSearchEnabled,
   ensembleEnabled,
   ensembleModelIds,
+  voicePersona,
+  onChangeVoicePersona,
   onAddTask,
   onToggleTask,
   onClearCompleted,
@@ -622,6 +627,8 @@ export function MemoryAndPermissionsPanel({
             webSearchEnabled={webSearchEnabled}
             ensembleEnabled={ensembleEnabled}
             ensembleModelIds={ensembleModelIds}
+            voicePersona={voicePersona}
+            onChangeVoicePersona={onChangeVoicePersona}
             onSelectModel={onSelectModel}
             onChangeOllamaUrl={onChangeOllamaUrl}
             onToggleWebSearch={onToggleWebSearch}

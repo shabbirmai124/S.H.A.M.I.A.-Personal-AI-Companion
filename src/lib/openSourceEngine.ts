@@ -8,8 +8,10 @@ import type {
 export interface DeviceHardwareReport {
   webGpuAvailable: boolean;
   deviceMemoryGb: number | null;
+  effectiveRamGb: number;
   cpuCores: number | null;
   recommendedTier: string;
+  recommendedModelId: string;
 }
 
 export function detectDeviceHardware(): DeviceHardwareReport {
@@ -17,8 +19,10 @@ export function detectDeviceHardware(): DeviceHardwareReport {
     return {
       webGpuAvailable: false,
       deviceMemoryGb: null,
+      effectiveRamGb: 4,
       cpuCores: null,
-      recommendedTier: 'Offline Core (Universal)',
+      recommendedTier: 'Safe Mode (4GB Profile)',
+      recommendedModelId: 'gemma-4-free',
     };
   }
 
@@ -28,22 +32,38 @@ export function detectDeviceHardware(): DeviceHardwareReport {
   };
   const webGpuAvailable = Boolean(nav.gpu);
   const deviceMemoryGb = typeof nav.deviceMemory === 'number' ? nav.deviceMemory : null;
+  const effectiveRamGb = deviceMemoryGb ?? 4;
   const cpuCores =
     typeof navigator.hardwareConcurrency === 'number' ? navigator.hardwareConcurrency : null;
 
-  let recommendedTier = 'Offline Core + Cloud Search';
-  if (webGpuAvailable && (deviceMemoryGb === null || deviceMemoryGb >= 4)) {
-    recommendedTier = '4nm/6nm WebGPU + 2B Ready';
-  } else if (deviceMemoryGb !== null && deviceMemoryGb >= 3) {
-    recommendedTier = '6nm 1B–1.5B Quantized Ready';
+  let recommendedTier = 'Cloud + Safe Local (<2GB)';
+  let recommendedModelId = 'gemma-4-free';
+  if (effectiveRamGb >= 8 && webGpuAvailable) {
+    recommendedTier = `${effectiveRamGb}GB RAM · Under-10B Ready`;
+    recommendedModelId = 'qwen3-4b-edge';
+  } else if (effectiveRamGb >= 4) {
+    recommendedTier = `${effectiveRamGb}GB RAM · 1B–4B Safe`;
+    recommendedModelId = 'qwen3-4b-edge';
+  } else {
+    recommendedTier = `${effectiveRamGb}GB RAM · 0.5B–2B Safe`;
+    recommendedModelId = 'offline-core';
   }
 
   return {
     webGpuAvailable,
     deviceMemoryGb,
+    effectiveRamGb,
     cpuCores,
     recommendedTier,
+    recommendedModelId,
   };
+}
+
+export function isModelSafeForLocalInstall(
+  spec: OpenSourceModelSpec,
+  hardware: DeviceHardwareReport
+): boolean {
+  return hardware.effectiveRamGb >= spec.minRamGb;
 }
 
 export interface WebSearchItem {
@@ -220,6 +240,14 @@ class BrowserOpenSourceLoader {
       throw new Error('This model runs via built-in engine or local Ollama.');
     }
 
+    const hw = detectDeviceHardware();
+    const safeRamGb = hw.deviceMemoryGb ?? 4;
+    if (spec.minRamGb > safeRamGb) {
+      throw new Error(
+        `Safety Guard: ${spec.name} requires ${spec.minRamGb}GB+ RAM for local install (detected ${safeRamGb}GB). Use Cloud mode or a ${safeRamGb}GB-compatible model.`
+      );
+    }
+
     if (this.loadedModelId === spec.id && this.generator) {
       onProgress(100, `${spec.name} active offline in memory`);
       return;
@@ -323,6 +351,14 @@ class OfflineVoiceAssistantRunner {
     spec: OfflineVoiceModelSpec,
     onProgress: (pct: number, statusText: string) => void
   ): Promise<void> {
+    const hw = detectDeviceHardware();
+    const safeRamGb = hw.deviceMemoryGb ?? 4;
+    if (spec.minRamGb > safeRamGb) {
+      throw new Error(
+        `Safety Guard: ${spec.name} requires ${spec.minRamGb}GB+ RAM (detected ${safeRamGb}GB).`
+      );
+    }
+
     onProgress(8, `Preparing ${spec.name}...`);
     const transformers = await importTransformers();
 
@@ -362,10 +398,14 @@ class OfflineVoiceAssistantRunner {
     return (res?.text || '').trim();
   }
 
-  public async synthesizeSpeech(text: string): Promise<{ audio: Float32Array; sampleRate: number } | null> {
+  public async synthesizeSpeech(
+    text: string,
+    persona: 'female' | 'male' = 'female'
+  ): Promise<{ audio: Float32Array; sampleRate: number } | null> {
     if (!this.ttsPipe) return null;
     try {
-      const out = await this.ttsPipe(text, { voice: 'af_heart' });
+      const voiceId = persona === 'male' ? 'am_adam' : 'af_heart';
+      const out = await this.ttsPipe(text, { voice: voiceId });
       if (out?.audio && out.audio.length > 0) {
         return {
           audio: out.audio,

@@ -141,6 +141,7 @@ export function speakShamia(
   text: string,
   options: {
     enabled: boolean;
+    persona?: 'female' | 'male';
     onStart?: () => void;
     onEnd?: () => void;
   }
@@ -156,12 +157,14 @@ export function speakShamia(
     return;
   }
 
+  const persona = options.persona || 'female';
+
   // Prefer installed offline open-source neural voice (Kokoro 82M) if loaded
   if (offlineVoiceRunner.isTtsReady()) {
     options.onStart?.();
     void (async () => {
       try {
-        const res = await offlineVoiceRunner.synthesizeSpeech(spoken);
+        const res = await offlineVoiceRunner.synthesizeSpeech(spoken, persona);
         if (res && res.audio.length > 0) {
           const AudioCtx =
             window.AudioContext ||
@@ -188,17 +191,51 @@ export function speakShamia(
       } catch {
         // Fallback smoothly to browser speech synthesis below
       }
-      speakWithBrowserSpeech(spoken, options);
+      speakWithBrowserSpeech(spoken, { ...options, persona });
     })();
     return;
   }
 
-  speakWithBrowserSpeech(spoken, options);
+  speakWithBrowserSpeech(spoken, { ...options, persona });
+}
+
+function selectClearNaturalVoice(
+  voices: SpeechSynthesisVoice[],
+  persona: 'female' | 'male'
+): SpeechSynthesisVoice | undefined {
+  const enVoices = voices.filter((v) => /^en[-_]/i.test(v.lang) || /^en$/i.test(v.lang));
+  const pool = enVoices.length > 0 ? enVoices : voices;
+
+  const femalePattern =
+    /natural|neural|aria|jenny|sonia|samantha|ava|allison|serena|martha|karen|libby|hazel|susan|zira|victoria|google uk english female|google us english/i;
+  const malePattern =
+    /natural|neural|guy|ryan|andrew|brian|christopher|eric|daniel|ARTHUR|oliver|george|alex|david|mark|google uk english male/i;
+  const explicitFemaleNames =
+    /aria|jenny|sonia|samantha|ava|allison|serena|martha|karen|libby|hazel|susan|zira|victoria|female/i;
+  const explicitMaleNames =
+    /guy|ryan|andrew|brian|christopher|eric|daniel|arthur|oliver|george|alex|david|mark|\bmale\b/i;
+
+  if (persona === 'female') {
+    return (
+      pool.find((v) => /natural|neural|google/i.test(v.name) && explicitFemaleNames.test(v.name)) ||
+      pool.find((v) => explicitFemaleNames.test(v.name)) ||
+      pool.find((v) => femalePattern.test(v.name) && !explicitMaleNames.test(v.name)) ||
+      pool[0]
+    );
+  }
+
+  return (
+    pool.find((v) => /natural|neural|google/i.test(v.name) && explicitMaleNames.test(v.name)) ||
+    pool.find((v) => explicitMaleNames.test(v.name)) ||
+    pool.find((v) => malePattern.test(v.name) && !explicitFemaleNames.test(v.name)) ||
+    pool[0]
+  );
 }
 
 function speakWithBrowserSpeech(
   spoken: string,
   options: {
+    persona?: 'female' | 'male';
     onStart?: () => void;
     onEnd?: () => void;
   }
@@ -215,18 +252,17 @@ function speakWithBrowserSpeech(
     const utterance = new SpeechSynthesisUtterance(spoken);
     activeUtterance = utterance;
 
+    const persona = options.persona || 'female';
     const voices = window.speechSynthesis.getVoices();
-    const britishVoice =
-      voices.find((v) => /en[-_]GB/i.test(v.lang) && /male|daniel|george|oliver|ryan|arthur/i.test(v.name)) ||
-      voices.find((v) => /en[-_]GB/i.test(v.lang)) ||
-      voices.find((v) => /^en/i.test(v.lang));
+    const chosenVoice = selectClearNaturalVoice(voices, persona);
 
-    if (britishVoice) {
-      utterance.voice = britishVoice;
+    if (chosenVoice) {
+      utterance.voice = chosenVoice;
     }
-    utterance.lang = britishVoice?.lang || 'en-GB';
-    utterance.pitch = 0.94;
-    utterance.rate = 1.03;
+    utterance.lang = chosenVoice?.lang || 'en-US';
+    // Clear, unhurried articulation (0.94x speed) so non-native and native listeners understand every word effortlessly
+    utterance.rate = 0.94;
+    utterance.pitch = persona === 'female' ? 1.03 : 0.96;
 
     utterance.onstart = () => options.onStart?.();
     utterance.onend = () => {

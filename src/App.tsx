@@ -5,6 +5,7 @@ import {
   Mic,
   MicOff,
   PanelRight,
+  RotateCcw,
   Send,
   User,
   Volume2,
@@ -84,6 +85,7 @@ import type {
   SyllabusItem,
   TaskItem,
   UserIdentityProfile,
+  VoicePersona,
 } from './types/shamia';
 
 const STORAGE_KEYS = {
@@ -99,6 +101,7 @@ const STORAGE_KEYS = {
   ollamaUrl: 'shamia.ollama.v1',
   ensembleEnabled: 'shamia.ensembleEnabled.v1',
   ensembleModels: 'shamia.ensembleModels.v1',
+  voicePersona: 'shamia.voicePersona.v1',
 };
 
 function loadStoredJson<T>(key: string, fallback: T): T {
@@ -149,6 +152,9 @@ export default function App() {
   const [selectedModelId, setSelectedModelId] = useState<string>(() =>
     loadStoredJson(STORAGE_KEYS.modelId, 'gemma-4-free')
   );
+  const [voicePersona, setVoicePersona] = useState<VoicePersona>(() =>
+    loadStoredJson(STORAGE_KEYS.voicePersona, 'female')
+  );
   const [rightTab, setRightTab] = useState<PanelTab>('memory');
   const [ollamaUrl, setOllamaUrl] = useState<string>(() =>
     loadStoredJson(STORAGE_KEYS.ollamaUrl, 'http://127.0.0.1:11434')
@@ -165,18 +171,23 @@ export default function App() {
     ])
   );
 
-  const [messages, setMessages] = useState<HudMessage[]>(() => [
-    {
-      id: 'msg-welcome',
-      role: 'assistant',
-      text: `Good to see you, ${
-        loadStoredJson(STORAGE_KEYS.identity, DEFAULT_USER_IDENTITY).addressAs || 'Sir'
-      }. How can I help today?`,
-      timestamp: new Date().toISOString(),
-      modelLabel: 'Gemma 4',
-      source: 'cloud-gemini',
-    },
-  ]);
+  const [messages, setMessages] = useState<HudMessage[]>(() => {
+    const initialId = loadStoredJson(STORAGE_KEYS.modelId, 'gemma-4-free');
+    const initialModel =
+      OPEN_SOURCE_MODEL_CATALOG.find((m) => m.id === initialId) || OPEN_SOURCE_MODEL_CATALOG[0];
+    return [
+      {
+        id: 'msg-welcome',
+        role: 'assistant',
+        text: `Good to see you, ${
+          loadStoredJson(STORAGE_KEYS.identity, DEFAULT_USER_IDENTITY).addressAs || 'Sir'
+        }. How can I help today?`,
+        timestamp: new Date().toISOString(),
+        modelLabel: initialModel.name,
+        source: initialModel.runtime === 'built-in' ? 'offline-core' : 'cloud-gemini',
+      },
+    ];
+  });
 
   const [inputText, setInputText] = useState('');
   const [interimVoice, setInterimVoice] = useState('');
