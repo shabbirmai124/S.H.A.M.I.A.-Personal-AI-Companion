@@ -137,7 +137,7 @@ export function OpenSourceModelHub({
         <ul className="flex flex-col gap-2">
           {OPEN_SOURCE_MODEL_CATALOG.map((model) => {
             const active = selectedModelId === model.id;
-            const isWebGpu = model.runtime === 'webgpu';
+            const hasBrowserWeights = Boolean(model.hfRepo);
             const isLoadedInBrowser = loadedBrowserId === model.id;
             const meetsRam =
               hardware.deviceMemoryGb === null || hardware.deviceMemoryGb >= model.minRamGb;
@@ -178,7 +178,7 @@ export function OpenSourceModelHub({
 
                 <p className="text-[11px] text-[#94A3B8] leading-relaxed">{model.summary}</p>
 
-                {isWebGpu && (
+                {hasBrowserWeights && (
                   <button
                     type="button"
                     onClick={() => void handleLoadWebGpuModel(model)}

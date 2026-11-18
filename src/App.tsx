@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
-  Battery,
-  BatteryCharging,
+  Cpu,
   Globe,
   Mic,
   MicOff,
@@ -10,14 +9,12 @@ import {
   User,
   Volume2,
   VolumeX,
-  Wifi,
-  WifiOff,
   X,
 } from 'lucide-react';
 import { AccountIdentityModal } from './components/AccountIdentityModal';
 import { HudMessageCard } from './components/HudMessageCard';
 import { MediaBar } from './components/MediaBar';
-import { MemoryAndPermissionsPanel } from './components/MemoryAndPermissionsPanel';
+import { MemoryAndPermissionsPanel, type PanelTab } from './components/MemoryAndPermissionsPanel';
 import { QuantumCore } from './components/QuantumCore';
 import {
   createVoiceRecognizer,
@@ -50,7 +47,6 @@ import {
   MUSIC_TRACKS,
   OPEN_SOURCE_MODEL_CATALOG,
   policiesRecordFromRules,
-  SYSTEM_MEANING,
   SYSTEM_NAME,
   toggleTaskItem,
 } from './lib/memoryStore';
@@ -83,7 +79,7 @@ const STORAGE_KEYS = {
   alarms: 'shamia.alarms.v1',
   identity: 'shamia.identity.v1',
   controls: 'shamia.controls.v1',
-  modelId: 'shamia.model.v1',
+  modelId: 'shamia.model.v2',
   ollamaUrl: 'shamia.ollama.v1',
 };
 
@@ -127,8 +123,9 @@ export default function App() {
     loadStoredJson(STORAGE_KEYS.controls, DEFAULT_DEVICE_CONTROLS)
   );
   const [selectedModelId, setSelectedModelId] = useState<string>(() =>
-    loadStoredJson(STORAGE_KEYS.modelId, 'offline-core')
+    loadStoredJson(STORAGE_KEYS.modelId, 'gemma-3-free')
   );
+  const [rightTab, setRightTab] = useState<PanelTab>('memory');
   const [ollamaUrl, setOllamaUrl] = useState<string>(() =>
     loadStoredJson(STORAGE_KEYS.ollamaUrl, 'http://127.0.0.1:11434')
   );
@@ -138,11 +135,12 @@ export default function App() {
     {
       id: 'msg-welcome',
       role: 'assistant',
-      text: `At your service, ${
+      text: `Good to see you, ${
         loadStoredJson(STORAGE_KEYS.identity, DEFAULT_USER_IDENTITY).addressAs || 'Sir'
-      }. Offline core, phone controls, and live web search are calibrated. Ask me anything—from daily tasks and device actions to English speaking practice or quiet support.`,
+      }. How can I help today?`,
       timestamp: new Date().toISOString(),
-      source: 'offline-core',
+      modelLabel: 'Gemma 3',
+      source: 'cloud-gemini',
     },
   ]);
 
@@ -677,10 +675,10 @@ export default function App() {
           }
         }
 
-        // Engine A: In-Browser WebGPU Open-Source Model (if loaded)
+        // Engine A: In-Browser WebGPU Open-Source Model (if cached & selected for offline or network is down)
         if (
-          selectedModel.runtime === 'webgpu' &&
-          browserModelRunner.getLoadedModelId() === selectedModel.id
+          browserModelRunner.getLoadedModelId() === selectedModel.id &&
+          (selectedModel.runtime === 'webgpu' || !isOnline)
         ) {
           const reply = await browserModelRunner.generate(trimmed, identity, webSummary);
           setMessages((prev) => [
@@ -692,6 +690,7 @@ export default function App() {
               timestamp: new Date().toISOString(),
               intent: detectedIntent,
               source: 'webgpu-local',
+              modelLabel: selectedModel.name,
               groundingLinks,
               showBreathingTool: detectedIntent === 'mental-support',
             },
@@ -727,6 +726,7 @@ export default function App() {
               timestamp: new Date().toISOString(),
               intent: detectedIntent,
               source: 'ollama-local',
+              modelLabel: selectedModel.name,
               groundingLinks,
               showBreathingTool: detectedIntent === 'mental-support',
             },
@@ -735,69 +735,74 @@ export default function App() {
           return;
         }
 
-        // Engine C: Cloud Free Open Web + Server AI
-        if (selectedModel.runtime === 'cloud') {
-          const res = await fetch('/api/shamia/chat', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              message: trimmed,
-              history: messages.slice(-8).map((m) => ({ role: m.role, text: m.text })),
-              identity,
-              detectedIntent,
-              permissions: permissionMap,
-              tasks: tasks.map((t) => ({ title: t.title, completed: t.completed })),
-              useResearch: wantsSearch && webSearchEnabled,
-            }),
-          });
+        // Engine C: Free Online Open-Source Gemma / Llama / Qwen / SmolLM2 + Live Web Search
+        if (selectedModel.runtime === 'cloud' && isOnline) {
+          try {
+            const res = await fetch('/api/shamia/chat', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                message: trimmed,
+                modelId: selectedModel.id,
+                history: messages.slice(-8).map((m) => ({ role: m.role, text: m.text })),
+                identity,
+                detectedIntent,
+                permissions: permissionMap,
+                tasks: tasks.map((t) => ({ title: t.title, completed: t.completed })),
+                useResearch: wantsSearch && webSearchEnabled,
+              }),
+            });
 
-          const data = (await res.json()) as {
-            error?: string;
-            replyText?: string;
-            proposedAction?: Omit<PendingAction, 'id' | 'status' | 'createdAt'>;
-            directMemoryMutation?:
-              | { kind: 'add_task'; title: string; priority: 'high' | 'normal' }
-              | { kind: 'clear_completed' }
-              | { kind: 'add_note'; content: string };
-            coachingTip?: HudMessage['coachingTip'];
-            showBreathingTool?: boolean;
-            groundingLinks?: GroundingLink[];
-            source?: HudMessage['source'];
-          };
+            const data = (await res.json()) as {
+              error?: string;
+              replyText?: string;
+              modelLabel?: string;
+              proposedAction?: Omit<PendingAction, 'id' | 'status' | 'createdAt'>;
+              directMemoryMutation?:
+                | { kind: 'add_task'; title: string; priority: 'high' | 'normal' }
+                | { kind: 'clear_completed' }
+                | { kind: 'add_note'; content: string };
+              coachingTip?: HudMessage['coachingTip'];
+              showBreathingTool?: boolean;
+              groundingLinks?: GroundingLink[];
+              source?: HudMessage['source'];
+            };
 
-          if (!res.ok) {
-            throw new Error(data.error || 'Server intelligence request failed.');
+            if (res.ok) {
+              if (data.directMemoryMutation && evaluatePermission(permissionMap, 'manage_memory') === 'allow') {
+                applyDirectMemoryMutation(data.directMemoryMutation);
+              }
+
+              if (data.proposedAction) {
+                stageOrExecuteAction(data.proposedAction, data.replyText);
+                return;
+              }
+
+              const finalReply = data.replyText || `How can I help further, ${addr}?`;
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `msg-j-${Date.now()}`,
+                  role: 'assistant',
+                  text: finalReply,
+                  timestamp: new Date().toISOString(),
+                  intent: detectedIntent,
+                  source: data.source || 'cloud-gemini',
+                  modelLabel: data.modelLabel || selectedModel.name,
+                  coachingTip: data.coachingTip,
+                  showBreathingTool: data.showBreathingTool,
+                  groundingLinks:
+                    data.groundingLinks && data.groundingLinks.length > 0
+                      ? data.groundingLinks
+                      : groundingLinks,
+                },
+              ]);
+              speakReply(finalReply);
+              return;
+            }
+          } catch {
+            // Fall through gracefully to offline companion / cached local model
           }
-
-          if (data.directMemoryMutation && evaluatePermission(permissionMap, 'manage_memory') === 'allow') {
-            applyDirectMemoryMutation(data.directMemoryMutation);
-          }
-
-          if (data.proposedAction) {
-            stageOrExecuteAction(data.proposedAction, data.replyText);
-            return;
-          }
-
-          const finalReply = data.replyText || `At your service, ${addr}.`;
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `msg-j-${Date.now()}`,
-              role: 'assistant',
-              text: finalReply,
-              timestamp: new Date().toISOString(),
-              intent: detectedIntent,
-              source: data.source || 'cloud-gemini',
-              coachingTip: data.coachingTip,
-              showBreathingTool: data.showBreathingTool,
-              groundingLinks:
-                data.groundingLinks && data.groundingLinks.length > 0
-                  ? data.groundingLinks
-                  : groundingLinks,
-            },
-          ]);
-          speakReply(finalReply);
-          return;
         }
 
         // Engine D: Built-In Offline Core (or WebGPU fallback before download) + Live Web Search
@@ -963,11 +968,6 @@ export default function App() {
     shamiaAudio.setVolume(val);
   };
 
-  const currentClock = new Date(nowMs).toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-
   return (
     <div
       className="relative min-h-screen h-screen flex flex-col bg-[#06080C] text-[#E8EEF3] overflow-hidden transition-[filter] duration-300"
@@ -992,49 +992,27 @@ export default function App() {
         />
       )}
 
-      {/* Top Navigation Bar — Clean 3-Zone Contract */}
+      {/* Minimal Executive Header */}
       <header className="relative z-10 shrink-0 h-14 px-4 sm:px-6 border-b border-white/[0.08] bg-[#070A0F]/85 backdrop-blur-xl flex items-center justify-between gap-4">
-        {/* Zone 1: Brand Wordmark */}
-        <span
-          title={`${SYSTEM_NAME} — ${SYSTEM_MEANING}`}
-          className="font-display text-lg font-semibold tracking-wider text-[#E8EEF3] whitespace-nowrap shrink-0"
-        >
-          {SYSTEM_NAME}
-        </span>
-
-        {/* Zone 2: Quiet Active Engine + Web Search Status */}
-        <div className="hidden sm:flex items-center gap-2 text-xs text-[#94A3B8] truncate">
-          <span className="truncate">{selectedModel.name}</span>
-          <span aria-hidden="true">·</span>
-          <span className="whitespace-nowrap">
-            {webSearchEnabled ? 'Live Web Search Ready' : 'Offline Only'}
+        {/* Left: Wordmark + Active Model Selector */}
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="font-display text-lg font-semibold tracking-wider text-[#E8EEF3] whitespace-nowrap shrink-0">
+            {SYSTEM_NAME}
           </span>
+          <span className="hidden sm:inline-block h-4 w-px bg-white/10" aria-hidden="true" />
+          <button
+            type="button"
+            onClick={() => setRightTab('models')}
+            title="Switch open-source model"
+            className="hidden sm:inline-flex items-center gap-1.5 min-h-[32px] px-2.5 py-1 rounded-lg bg-[#0D1219] border border-white/[0.08] hover:border-[#38BDF8]/40 text-xs text-[#CBD5E1] hover:text-white transition-colors truncate"
+          >
+            <Cpu className="w-3.5 h-3.5 text-[#38BDF8] shrink-0" aria-hidden="true" />
+            <span className="truncate">{selectedModel.name}</span>
+          </button>
         </div>
 
-        {/* Zone 3: Telemetry, Profile & Audio Controls */}
-        <div className="flex items-center gap-2.5 shrink-0">
-          <div className="hidden md:flex items-center gap-2.5 text-xs text-[#94A3B8]">
-            <time className="font-mono-tabular text-[#E8EEF3]">{currentClock}</time>
-            <span aria-hidden="true">·</span>
-            <span className="inline-flex items-center gap-1 font-mono-tabular">
-              {batteryCharging ? (
-                <BatteryCharging className="w-3.5 h-3.5 text-[#38BDF8]" aria-hidden="true" />
-              ) : (
-                <Battery className="w-3.5 h-3.5 text-[#94A3B8]" aria-hidden="true" />
-              )}
-              <span>{batteryLevel !== null ? `${batteryLevel}%` : 'AC'}</span>
-            </span>
-            <span aria-hidden="true">·</span>
-            <span className="inline-flex items-center gap-1">
-              {isOnline ? (
-                <Wifi className="w-3.5 h-3.5 text-emerald-400" aria-hidden="true" />
-              ) : (
-                <WifiOff className="w-3.5 h-3.5 text-amber-400" aria-hidden="true" />
-              )}
-              <span>{isOnline ? 'Online' : 'Offline'}</span>
-            </span>
-          </div>
-
+        {/* Right: Profile, Voice & Mobile Drawer */}
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={() => setProfileModalOpen(true)}
@@ -1042,7 +1020,7 @@ export default function App() {
             className="min-h-[38px] px-3 rounded-xl bg-[#0D1219] border border-white/10 text-xs font-medium text-[#E8EEF3] hover:border-[#38BDF8]/40 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
           >
             <User className="w-3.5 h-3.5 text-[#38BDF8]" aria-hidden="true" />
-            <span className="max-w-[130px] truncate">{identity.fullName}</span>
+            <span className="max-w-[140px] truncate">{identity.fullName}</span>
           </button>
 
           <button
@@ -1075,18 +1053,12 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main 3-Column Luxury Cockpit Layout */}
+      {/* Main 3-Column Cockpit Layout */}
       <div className="relative z-10 flex-1 min-h-0 max-w-[1440px] w-full mx-auto grid grid-cols-1 lg:grid-cols-[290px_minmax(0,1fr)_350px] gap-0 lg:gap-6 lg:px-6 lg:py-5">
         {/* Left Rail */}
         <aside className="hidden lg:flex flex-col gap-5 min-h-0 overflow-y-auto hud-scroll pr-1">
-          <div className="rounded-2xl bg-[#0B0F15]/85 backdrop-blur-xl border border-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] p-5 flex flex-col items-center gap-4">
+          <div className="rounded-2xl bg-[#0B0F15]/85 backdrop-blur-xl border border-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] p-5 flex flex-col items-center">
             <QuantumCore state={coreState} onToggleListen={handleToggleListen} />
-            <div className="text-center space-y-1">
-              <p className="text-xs font-medium text-[#E8EEF3]">
-                {identity.fullName} · Addressed as &ldquo;{addr}&rdquo;
-              </p>
-              <p className="text-[11px] text-[#94A3B8] leading-relaxed">{SYSTEM_MEANING}</p>
-            </div>
           </div>
 
           {musicActive && (
@@ -1137,13 +1109,17 @@ export default function App() {
                         : 'Tap core to speak'}
                 </span>
               </div>
-              <div className="flex flex-col items-end gap-0.5 text-xs text-[#94A3B8]">
-                <time className="font-mono-tabular text-sm text-[#E8EEF3]">{currentClock}</time>
-                <span className="font-mono-tabular">
-                  Battery: {batteryLevel !== null ? `${batteryLevel}%` : 'AC'}
-                </span>
-                <span className="truncate max-w-[140px]">{selectedModel.name}</span>
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setRightTab('models');
+                  setMobileDrawerOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#0B0F15] border border-white/[0.08] text-[11px] text-[#CBD5E1] max-w-[155px]"
+              >
+                <Cpu className="w-3 h-3 text-[#38BDF8] shrink-0" aria-hidden="true" />
+                <span className="truncate">{selectedModel.name}</span>
+              </button>
             </div>
 
             {musicActive && (
@@ -1183,6 +1159,13 @@ export default function App() {
                 message={msg}
                 userLabel={addr}
                 onResolveAction={handleResolvePendingAction}
+                onSpeakMessage={(text) =>
+                  speakShamia(text, {
+                    enabled: true,
+                    onStart: () => setIsSpeaking(true),
+                    onEnd: () => setIsSpeaking(false),
+                  })
+                }
               />
             ))}
 
@@ -1351,6 +1334,8 @@ export default function App() {
             onSelectModel={(spec) => setSelectedModelId(spec.id)}
             onChangeOllamaUrl={setOllamaUrl}
             onToggleWebSearch={setWebSearchEnabled}
+            activeTab={rightTab}
+            onTabChange={setRightTab}
           />
         </aside>
       </div>
@@ -1452,6 +1437,8 @@ export default function App() {
                 onSelectModel={(spec) => setSelectedModelId(spec.id)}
                 onChangeOllamaUrl={setOllamaUrl}
                 onToggleWebSearch={setWebSearchEnabled}
+                activeTab={rightTab}
+                onTabChange={setRightTab}
               />
             </div>
           </div>

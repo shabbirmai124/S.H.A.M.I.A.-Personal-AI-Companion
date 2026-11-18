@@ -51,6 +51,8 @@ export interface OpenSourceModelSpec {
   runtime: 'built-in' | 'webgpu' | 'ollama' | 'cloud';
   hfRepo?: string;
   ollamaTag?: string;
+  family?: 'gemma' | 'llama' | 'qwen' | 'smollm' | 'offline';
+  freeOnlineAvailable?: boolean;
   summary: string;
   smartphoneReady: boolean;
 }
@@ -97,6 +99,7 @@ export interface HudMessage {
     | 'cloud-gemini'
     | 'cloud-research'
     | 'permission-gate';
+  modelLabel?: string;
   pendingAction?: PendingAction;
   coachingTip?: CoachingTip;
   showBreathingTool?: boolean;

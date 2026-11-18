@@ -142,11 +142,34 @@ export function generateOfflineCompanionReply(
     };
   }
 
-  // 4. Greeting / Companion Rapport
-  if (/^(hi|hello|hey|good morning|good afternoon|good evening|how are you)\b/i.test(lower)) {
+  // 4. Normal Everyday Conversation (Greetings, Gratitude, Capabilities, Encouragement)
+  if (/^(hi|hello|hey|good morning|good afternoon|good evening|how are you|how's it going|what's up)\b/i.test(lower)) {
     return {
       intent: 'general',
-      text: `Right here and ready, ${addr}. Whether you need phone controls, English speaking practice, or just a quiet sounding board, let me know what comes first.`,
+      text: /how are you|how's it going|what's up/i.test(lower)
+        ? `Doing well, ${addr}—thank you for asking. How is your day going, and what would you like to work on?`
+        : `Hello, ${addr}. How can I assist you right now?`,
+    };
+  }
+
+  if (/\b(thank you|thanks|appreciate it|good job|well done)\b/i.test(lower)) {
+    return {
+      intent: 'general',
+      text: `You are very welcome, ${addr}. Let me know whenever you need anything else.`,
+    };
+  }
+
+  if (/\b(what can you do|help me|capabilities|features)\b/i.test(lower)) {
+    return {
+      intent: 'general',
+      text: `I can chat naturally, coach your spoken English in real time, search the web, manage your priorities and alarms, and handle phone controls behind your Permission Vault, ${addr}.`,
+    };
+  }
+
+  if (/\b(good night|bye|see you|take care|going to sleep)\b/i.test(lower)) {
+    return {
+      intent: 'general',
+      text: `Have a restful evening, ${addr}. I will be right here whenever you return.`,
     };
   }
 
@@ -159,13 +182,13 @@ export function generateOfflineCompanionReply(
           naturalPhrase: rule.naturalPhrase,
           tip: rule.tip,
         },
-        text: `Got it, ${addr}. Also, a quick fluency polish if you are practicing: try saying "${rule.naturalPhrase}". What would you like to focus on next?`,
+        text: `Got it, ${addr}. Also, a quick fluency polish: try saying "${rule.naturalPhrase}". What would you like to focus on next?`,
       };
     }
   }
 
   return {
     intent: 'general',
-    text: `Understood, ${addr}. I am currently running on the Offline Core engine—I can run phone controls, alarms, tasks, music, English speaking drills, and calm check-ins instantly without internet, or you can load an on-device Open-Source model in the Engine tab for open-ended chat.`,
+    text: `I hear you, ${addr}. Could you share a little more detail so I can give you a clearer answer?`,
   };
 }

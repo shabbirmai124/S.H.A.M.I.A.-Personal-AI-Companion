@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { UserCheck, X } from 'lucide-react';
-import { AUTHOR_EMAIL, AUTHOR_NAME, SYSTEM_MEANING, SYSTEM_NAME } from '../lib/memoryStore';
+import { SYSTEM_NAME } from '../lib/memoryStore';
 import type { UserIdentityProfile } from '../types/shamia';
 
 interface AccountIdentityModalProps {
@@ -42,13 +42,10 @@ export function AccountIdentityModal({
               id="account-modal-title"
               className="font-display text-lg font-semibold text-[#E8EEF3]"
             >
-              Profile &amp; Address Settings
+              Profile Settings
             </h2>
-            <p className="text-xs text-[#94A3B8] mt-1 leading-relaxed">
-              <span className="text-[#38BDF8] font-medium">{SYSTEM_NAME}</span> — {SYSTEM_MEANING}
-            </p>
-            <p className="text-[11px] text-[#64748B] mt-0.5">
-              Created by {AUTHOR_NAME} · {AUTHOR_EMAIL}
+            <p className="text-xs text-[#94A3B8] mt-1">
+              Manage your account name and preferred form of address.
             </p>
           </div>
           <button

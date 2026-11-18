@@ -41,9 +41,11 @@ interface MemoryAndPermissionsPanelProps {
   onSelectModel: (spec: OpenSourceModelSpec) => void;
   onChangeOllamaUrl: (url: string) => void;
   onToggleWebSearch: (enabled: boolean) => void;
+  activeTab?: PanelTab;
+  onTabChange?: (tab: PanelTab) => void;
 }
 
-type PanelTab = 'memory' | 'device' | 'models' | 'vault';
+export type PanelTab = 'memory' | 'device' | 'models' | 'vault';
 
 export function MemoryAndPermissionsPanel({
   tasks,
@@ -69,8 +71,15 @@ export function MemoryAndPermissionsPanel({
   onSelectModel,
   onChangeOllamaUrl,
   onToggleWebSearch,
+  activeTab: controlledTab,
+  onTabChange,
 }: MemoryAndPermissionsPanelProps) {
-  const [activeTab, setActiveTab] = useState<PanelTab>('memory');
+  const [internalTab, setInternalTab] = useState<PanelTab>('memory');
+  const activeTab = controlledTab ?? internalTab;
+  const setActiveTab = (tab: PanelTab) => {
+    setInternalTab(tab);
+    onTabChange?.(tab);
+  };
   const [taskInput, setTaskInput] = useState('');
   const [taskPriority, setTaskPriority] = useState<'normal' | 'high'>('normal');
   const [noteInput, setNoteInput] = useState('');

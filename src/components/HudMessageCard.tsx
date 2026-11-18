@@ -7,6 +7,7 @@ import {
   ShieldCheck,
   ShieldX,
   Sparkles,
+  Volume2,
 } from 'lucide-react';
 import { SYSTEM_NAME } from '../lib/memoryStore';
 import type { HudMessage, PendingAction } from '../types/shamia';
@@ -21,6 +22,7 @@ interface HudMessageCardProps {
     decision: 'authorize-once' | 'always-allow' | 'deny',
     overridePhone?: string
   ) => void;
+  onSpeakMessage?: (text: string) => void;
 }
 
 const SOURCE_TEXT: Record<NonNullable<HudMessage['source']>, string> = {
@@ -36,6 +38,7 @@ export function HudMessageCard({
   message,
   userLabel,
   onResolveAction,
+  onSpeakMessage,
 }: HudMessageCardProps) {
   const isUser = message.role === 'user';
   const action = message.pendingAction;
@@ -55,17 +58,28 @@ export function HudMessageCard({
         isUser ? 'items-end' : 'items-start'
       }`}
     >
-      <div className="flex items-center gap-2 text-xs text-[#7E92A4]">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[#7E92A4]">
         <span className={`font-medium ${isUser ? 'text-[#CBD5E1]' : 'text-[#38BDF8]'}`}>
           {isUser ? userLabel : SYSTEM_NAME}
         </span>
         <span aria-hidden="true">·</span>
         <time className="font-mono-tabular">{timeFormatted}</time>
-        {!isUser && message.source && (
+        {!isUser && (message.modelLabel || message.source) && (
           <>
             <span aria-hidden="true">·</span>
-            <span>{SOURCE_TEXT[message.source]}</span>
+            <span>{message.modelLabel || SOURCE_TEXT[message.source!]}</span>
           </>
+        )}
+        {!isUser && onSpeakMessage && (
+          <button
+            type="button"
+            onClick={() => onSpeakMessage(message.text)}
+            aria-label="Speak message aloud"
+            title="Speak aloud"
+            className="ml-1 inline-flex items-center justify-center w-6 h-6 rounded-md text-[#7E92A4] hover:text-[#38BDF8] hover:bg-white/[0.06] transition-colors"
+          >
+            <Volume2 className="w-3.5 h-3.5" aria-hidden="true" />
+          </button>
         )}
       </div>
 

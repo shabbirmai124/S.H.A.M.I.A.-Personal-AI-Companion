@@ -259,6 +259,7 @@ interface ChatRequestBody {
   permissions?: Record<PermissionCapability, PermissionPolicy>;
   tasks?: Array<{ title: string; completed: boolean }>;
   useResearch?: boolean;
+  modelId?: string;
 }
 
 async function createApp() {
@@ -303,84 +304,17 @@ async function createApp() {
         message
       );
 
-    const ai = getGeminiClient();
-
-    // Free online open-source Hugging Face Router fallback if HF_TOKEN is set and Gemini isn't
-    if (!ai && process.env.HF_TOKEN && process.env.HF_TOKEN !== 'MY_HUGGINGFACE_TOKEN') {
-      try {
-        let searchSummary = '';
-        let links: GroundingLink[] = [];
-        if (useResearch) {
-          const freeSearch = await executeFreeOpenWebSearch(message);
-          searchSummary = freeSearch.summary;
-          links = freeSearch.results.map((r) => ({ title: r.title, uri: r.url }));
-        }
-        const hfRes = await fetch('https://router.huggingface.co/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${process.env.HF_TOKEN.trim()}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'Qwen/Qwen2.5-1.5B-Instruct',
-            messages: [
-              {
-                role: 'system',
-                content: `You are S.H.A.M.I.A., created by Md Shabbir Mia. Always address the user respectfully as "${addr}". Keep replies concise and human-like.${
-                  searchSummary ? `\nLive web context: ${searchSummary}` : ''
-                }`,
-              },
-              { role: 'user', content: message },
-            ],
-            max_tokens: 220,
-          }),
-          signal: AbortSignal.timeout(12000),
-        });
-        if (hfRes.ok) {
-          const hfJson = (await hfRes.json()) as {
-            choices?: Array<{ message?: { content?: string } }>;
-          };
-          const hfText = hfJson.choices?.[0]?.message?.content?.trim();
-          if (hfText) {
-            res.json({
-              replyText: hfText,
-              groundingLinks: links,
-              source: useResearch ? 'cloud-research' : 'cloud-gemini',
-            });
-            return;
-          }
-        }
-      } catch {
-        // Fall through to free web search or clear fallback notice
-      }
-    }
-
-    // If cloud Gemini key isn't configured, still provide free real-time open web search when asked!
-    if (!ai) {
-      if (useResearch) {
-        const freeSearch = await executeFreeOpenWebSearch(message);
-        const links: GroundingLink[] = freeSearch.results.map((r) => ({
-          title: r.title,
-          uri: r.url,
-        }));
-        const replyText = freeSearch.summary
-          ? `Here is what live open web search found, ${addr}: ${freeSearch.summary}`
-          : `I ran a live open web search, ${addr}, though matching public summaries were limited. See the source links below.`;
-        res.json({
-          replyText,
-          groundingLinks: links,
-          source: 'cloud-research',
-        });
-        return;
-      }
-
-      res.status(503).json({
-        error: `Cloud AI key is not configured on this server, ${addr}. Switch to S.H.A.M.I.A. Offline Core or a 2B local/WebGPU open-source model in the Models tab—or enable free live web search.`,
-      });
-      return;
-    }
-
     const detectedIntent: ConversationalIntent = body.detectedIntent || 'general';
+    const requestedModelId = body.modelId || 'gemma-3-free';
+
+    const MODEL_LABELS: Record<string, string> = {
+      'gemma-3-free': 'Gemma 3',
+      'llama-32-free': 'Llama 3.2 1B',
+      'qwen25-1.5b-edge': 'Qwen 2.5 1.5B',
+      'smollm2-1.7b-edge': 'SmolLM2 1.7B',
+      'qwen25-0.5b-webgpu': 'Qwen 2.5 0.5B',
+    };
+    const modelLabel = MODEL_LABELS[requestedModelId] || 'Gemma 3';
 
     const permissions: Record<PermissionCapability, PermissionPolicy> = {
       dial_contact: body.permissions?.dial_contact ?? 'ask',
@@ -403,6 +337,141 @@ async function createApp() {
       pendingTasks
     );
 
+    const ai = getGeminiClient();
+
+    // Free open-source Llama / Gemma / Qwen / SmolLM2 inference when HF_TOKEN is set or Gemini key is absent
+    const shouldTryOpenRouter =
+      !ai ||
+      requestedModelId === 'llama-32-free' ||
+      requestedModelId === 'qwen25-1.5b-edge' ||
+      requestedModelId === 'smollm2-1.7b-edge';
+
+    if (shouldTryOpenRouter) {
+      let searchSummary = '';
+      let searchLinks: GroundingLink[] = [];
+      if (useResearch) {
+        const freeSearch = await executeFreeOpenWebSearch(message);
+        searchSummary = freeSearch.summary;
+        searchLinks = freeSearch.results.map((r) => ({ title: r.title, uri: r.url }));
+      }
+
+      const openMessages = [
+        {
+          role: 'system',
+          content: `${systemInstruction}${searchSummary ? `\n\nLive web context:\n${searchSummary}` : ''}`,
+        },
+        ...(body.history || []).slice(-6).map((t) => ({
+          role: t.role === 'user' ? 'user' : 'assistant',
+          content: t.text,
+        })),
+        { role: 'user', content: message },
+      ];
+
+      // 1) Optional HF_TOKEN router
+      if (process.env.HF_TOKEN && process.env.HF_TOKEN !== 'MY_HUGGINGFACE_TOKEN') {
+        try {
+          const hfModel =
+            requestedModelId === 'llama-32-free'
+              ? 'meta-llama/Llama-3.2-3B-Instruct'
+              : requestedModelId === 'smollm2-1.7b-edge'
+                ? 'HuggingFaceTB/SmolLM2-1.7B-Instruct'
+                : requestedModelId === 'gemma-3-free'
+                  ? 'google/gemma-2-2b-it'
+                  : 'Qwen/Qwen2.5-1.5B-Instruct';
+          const hfRes = await fetch('https://router.huggingface.co/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${process.env.HF_TOKEN.trim()}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ model: hfModel, messages: openMessages, max_tokens: 280 }),
+            signal: AbortSignal.timeout(8000),
+          });
+          if (hfRes.ok) {
+            const hfJson = (await hfRes.json()) as {
+              choices?: Array<{ message?: { content?: string } }>;
+            };
+            const rawReply = hfJson.choices?.[0]?.message?.content?.trim();
+            if (rawReply) {
+              const { cleanText, coachingTip } = extractCoachingTip(rawReply);
+              res.json({
+                replyText: cleanText || rawReply,
+                coachingTip,
+                showBreathingTool: detectedIntent === 'mental-support',
+                groundingLinks: searchLinks.slice(0, 4),
+                source: useResearch ? 'cloud-research' : 'cloud-gemini',
+                modelLabel,
+              });
+              return;
+            }
+          }
+        } catch {
+          // Fall through to keyless free open inference
+        }
+      }
+
+      // 2) Free keyless anonymous open inference fallback when no server key is set
+      if (!ai) {
+        try {
+          const freeRes = await fetch('https://text.pollinations.ai/openai', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'openai-fast',
+              messages: openMessages,
+            }),
+            signal: AbortSignal.timeout(5000),
+          });
+          if (freeRes.ok) {
+            const freeJson = (await freeRes.json()) as {
+              choices?: Array<{ message?: { content?: string } }>;
+            };
+            const rawReply = freeJson.choices?.[0]?.message?.content?.trim();
+            if (rawReply) {
+              const { cleanText, coachingTip } = extractCoachingTip(rawReply);
+              res.json({
+                replyText: cleanText || rawReply,
+                coachingTip,
+                showBreathingTool: detectedIntent === 'mental-support',
+                groundingLinks: searchLinks.slice(0, 4),
+                source: useResearch ? 'cloud-research' : 'cloud-gemini',
+                modelLabel,
+              });
+              return;
+            }
+          }
+        } catch {
+          // Fall through to free open web search / offline core
+        }
+      }
+    }
+
+    // Free open web search fallback when server key isn't set
+    if (!ai) {
+      if (useResearch) {
+        const freeSearch = await executeFreeOpenWebSearch(message);
+        const links: GroundingLink[] = freeSearch.results.map((r) => ({
+          title: r.title,
+          uri: r.url,
+        }));
+        const replyText = freeSearch.summary
+          ? `Here is what live search found, ${addr}: ${freeSearch.summary}`
+          : `I ran a live web search, ${addr}. See the source links below.`;
+        res.json({
+          replyText,
+          groundingLinks: links,
+          source: 'cloud-research',
+          modelLabel,
+        });
+        return;
+      }
+
+      res.status(503).json({
+        error: `Online endpoint unreachable, ${addr}. Using local engine.`,
+      });
+      return;
+    }
+
     const conversationHistory = (body.history || []).slice(-10).map((turn) => ({
       role: turn.role === 'user' ? 'user' : 'model',
       parts: [{ text: turn.text }],
@@ -412,6 +481,36 @@ async function createApp() {
       ...conversationHistory,
       { role: 'user', parts: [{ text: message }] },
     ];
+
+    // Prefer open-weight gemma-3-4b-it for standard chat on Gemma 3 if no Google Search/function tool is strictly required
+    if (requestedModelId === 'gemma-3-free' && !useResearch && detectedIntent === 'general') {
+      try {
+        const gemmaContents = [
+          { role: 'user', parts: [{ text: `[System Instructions]\n${systemInstruction}` }] },
+          { role: 'model', parts: [{ text: `Understood, ${addr}.` }] },
+          ...contents,
+        ];
+        const gemmaRes = await ai.models.generateContent({
+          model: 'gemma-3-4b-it',
+          contents: gemmaContents,
+        });
+        const rawGemma = gemmaRes.text?.trim();
+        if (rawGemma) {
+          const { cleanText, coachingTip } = extractCoachingTip(rawGemma);
+          res.json({
+            replyText: cleanText || rawGemma,
+            coachingTip,
+            showBreathingTool: false,
+            groundingLinks: [],
+            source: 'cloud-gemini',
+            modelLabel: 'Gemma 3',
+          });
+          return;
+        }
+      } catch {
+        // Seamlessly fall back to Flash-Lite / Hydrogen below
+      }
+    }
 
     const model =
       useResearch || detectedIntent !== 'general'
@@ -652,6 +751,7 @@ async function createApp() {
         showBreathingTool: detectedIntent === 'mental-support',
         groundingLinks: groundingLinks.slice(0, 4),
         source: useResearch ? 'cloud-research' : 'cloud-gemini',
+        modelLabel,
       });
     } catch (err: unknown) {
       const status =

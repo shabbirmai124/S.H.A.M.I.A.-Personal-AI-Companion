@@ -125,6 +125,16 @@ class ShamiaAudioEngine {
 
 export const shamiaAudio = new ShamiaAudioEngine();
 
+let activeUtterance: SpeechSynthesisUtterance | null = null;
+
+function cleanSpeechText(raw: string): string {
+  return raw
+    .replace(/[*_`#>-]+/g, ' ')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export function speakShamia(
   text: string,
   options: {
@@ -138,9 +148,19 @@ export function speakShamia(
     return;
   }
 
+  const spoken = cleanSpeechText(text);
+  if (!spoken) {
+    options.onEnd?.();
+    return;
+  }
+
   try {
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
+    window.speechSynthesis.resume();
+
+    const utterance = new SpeechSynthesisUtterance(spoken);
+    activeUtterance = utterance;
+
     const voices = window.speechSynthesis.getVoices();
     const britishVoice =
       voices.find((v) => /en[-_]GB/i.test(v.lang) && /male|daniel|george|oliver|ryan|arthur/i.test(v.name)) ||
@@ -151,15 +171,22 @@ export function speakShamia(
       utterance.voice = britishVoice;
     }
     utterance.lang = britishVoice?.lang || 'en-GB';
-    utterance.pitch = 0.9;
-    utterance.rate = 1.06;
+    utterance.pitch = 0.94;
+    utterance.rate = 1.03;
 
     utterance.onstart = () => options.onStart?.();
-    utterance.onend = () => options.onEnd?.();
-    utterance.onerror = () => options.onEnd?.();
+    utterance.onend = () => {
+      activeUtterance = null;
+      options.onEnd?.();
+    };
+    utterance.onerror = () => {
+      activeUtterance = null;
+      options.onEnd?.();
+    };
 
     window.speechSynthesis.speak(utterance);
   } catch {
+    activeUtterance = null;
     options.onEnd?.();
   }
 }
