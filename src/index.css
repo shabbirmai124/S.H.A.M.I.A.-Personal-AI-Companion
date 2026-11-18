@@ -1,0 +1,116 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: 'Outfit', system-ui, -apple-system, sans-serif;
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  }
+
+  html,
+  body {
+    font-family: var(--font-sans);
+    background-color: #06080C;
+    color: #E8EEF3;
+  }
+
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono-tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@keyframes core-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes core-rotate-reverse {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes core-wave {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.65;
+  }
+  100% {
+    transform: scale(1.38);
+    opacity: 0;
+  }
+}
+
+@keyframes core-breathe {
+  0%, 100% {
+    transform: scale(0.98);
+    opacity: 0.78;
+  }
+  50% {
+    transform: scale(1.03);
+    opacity: 1;
+  }
+}
+
+.animate-core-slow {
+  animation: core-rotate 34s linear infinite;
+}
+
+.animate-core-fast {
+  animation: core-rotate 7s linear infinite;
+}
+
+.animate-core-reverse {
+  animation: core-rotate-reverse 24s linear infinite;
+}
+
+.animate-core-wave {
+  animation: core-wave 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.animate-core-breathe {
+  animation: core-breathe 3.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-core-slow,
+  .animate-core-fast,
+  .animate-core-reverse,
+  .animate-core-wave,
+  .animate-core-breathe {
+    animation: none;
+  }
+}
+
+.hud-scroll::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+.hud-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hud-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 179, 196, 0.22);
+  border-radius: 9999px;
+}
+
+.hud-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(56, 189, 248, 0.4);
+}

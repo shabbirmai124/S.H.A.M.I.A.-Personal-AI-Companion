@@ -1,0 +1,10 @@
+{
+  "name": "J.A.R.V.I.S.",
+  "description": "Personal voice, companion, and permission-gated HUD assistant modeled after J.A.R.V.I.S.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
