@@ -9,7 +9,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { SYSTEM_NAME } from '../lib/memoryStore';
-import type { HudMessage, PendingAction } from '../types/jarvis';
+import type { HudMessage, PendingAction } from '../types/shamia';
 import { BreathingGuide } from './BreathingGuide';
 
 interface HudMessageCardProps {

@@ -1,8 +1,8 @@
-import type { MusicTrack } from '../types/jarvis';
+import type { MusicTrack } from '../types/shamia';
 
 // Polyphonic Web Audio ambient synth player + alarm chime + British TTS + Speech Recognition wrapper
 
-class JarvisAudioEngine {
+class ShamiaAudioEngine {
   private ctx: AudioContext | null = null;
   private isPlaying = false;
   private intervalId: number | null = null;
@@ -123,9 +123,9 @@ class JarvisAudioEngine {
   }
 }
 
-export const jarvisAudio = new JarvisAudioEngine();
+export const shamiaAudio = new ShamiaAudioEngine();
 
-export function speakJarvis(
+export function speakShamia(
   text: string,
   options: {
     enabled: boolean;
@@ -164,7 +164,7 @@ export function speakJarvis(
   }
 }
 
-export function stopSpeakingJarvis() {
+export function stopSpeakingShamia() {
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
     try {
       window.speechSynthesis.cancel();

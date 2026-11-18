@@ -3,7 +3,7 @@ import type {
   PermissionCapability,
   PermissionPolicy,
   UserIdentityProfile,
-} from '../types/jarvis';
+} from '../types/shamia';
 
 export function buildShamiaSystemInstruction(
   identity: UserIdentityProfile,

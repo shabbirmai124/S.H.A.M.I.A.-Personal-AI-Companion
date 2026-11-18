@@ -10,7 +10,7 @@ import type {
   PermissionPolicy,
   PermissionRule,
   TaskItem,
-} from '../types/jarvis';
+} from '../types/shamia';
 import { DeviceControlDeck } from './DeviceControlDeck';
 import { OpenSourceModelHub } from './OpenSourceModelHub';
 

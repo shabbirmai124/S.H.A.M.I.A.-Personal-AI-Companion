@@ -1,6 +1,6 @@
 import { useId } from 'react';
 import { Mic } from 'lucide-react';
-import type { CoreVisualState } from '../types/jarvis';
+import type { CoreVisualState } from '../types/shamia';
 
 interface QuantumCoreProps {
   state: CoreVisualState;

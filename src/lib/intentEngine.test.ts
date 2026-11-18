@@ -10,7 +10,7 @@ import {
 } from './intentEngine';
 import { DEFAULT_DEVICE_CONTROLS } from './memoryStore';
 import { generateOfflineCompanionReply } from './offlineCompanion';
-import type { PermissionCapability, PermissionPolicy } from '../types/jarvis';
+import type { PermissionCapability, PermissionPolicy } from '../types/shamia';
 
 const basePolicies: Record<PermissionCapability, PermissionPolicy> = {
   dial_contact: 'ask',

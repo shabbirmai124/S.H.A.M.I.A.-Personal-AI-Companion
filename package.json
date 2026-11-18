@@ -1,7 +1,9 @@
 {
-  "name": "react-example",
+  "name": "shamia-assistant",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "license": "UNLICENSED",
+  "author": "Md Shabbir Mia <shabbirmia520@gmail.com>",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",

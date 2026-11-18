@@ -1,5 +1,5 @@
 import { Music, Pause, Play, SkipForward, Square, Volume2 } from 'lucide-react';
-import type { MusicTrack } from '../types/jarvis';
+import type { MusicTrack } from '../types/shamia';
 
 interface MediaBarProps {
   track: MusicTrack;

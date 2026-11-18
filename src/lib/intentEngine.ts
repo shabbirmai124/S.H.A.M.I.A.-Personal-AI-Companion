@@ -7,7 +7,7 @@ import type {
   PermissionCapability,
   PermissionPolicy,
   TaskItem,
-} from '../types/jarvis';
+} from '../types/shamia';
 
 export interface LocalIntentContext {
   now: Date;

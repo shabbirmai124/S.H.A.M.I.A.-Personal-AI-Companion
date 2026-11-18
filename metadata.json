@@ -1,6 +1,6 @@
 {
-  "name": "J.A.R.V.I.S.",
-  "description": "Personal voice, companion, and permission-gated HUD assistant modeled after J.A.R.V.I.S.",
+  "name": "S.H.A.M.I.A.",
+  "description": "Smart Human-aligned Assistant & Mindful Interactive Aid — offline-capable, permission-gated voice companion for Md Shabbir Mia.",
   "requestFramePermissions": [
     "microphone"
   ],

@@ -1,4 +1,4 @@
-import type { CoachingTip, ConversationalIntent } from '../types/jarvis';
+import type { CoachingTip, ConversationalIntent } from '../types/shamia';
 import { detectConversationalIntent } from './intentEngine';
 
 export interface OfflineCompanionReply {

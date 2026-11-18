@@ -1,3 +1,7 @@
+/**
+ * S.H.A.M.I.A. Server
+ * Created by Md Shabbir Mia <shabbirmia520@gmail.com>
+ */
 import 'dotenv/config';
 import express from 'express';
 import fs from 'fs';
@@ -9,7 +13,7 @@ import {
   ThinkingLevel,
   Type,
 } from '@google/genai';
-import { buildShamiaSystemInstruction, extractCoachingTip } from './src/lib/jarvisPrompts.ts';
+import { buildShamiaSystemInstruction, extractCoachingTip } from './src/lib/shamiaPrompts.ts';
 import { resolveSupportedApp, validatePhoneNumber } from './src/lib/intentEngine.ts';
 import type {
   ConversationalIntent,
@@ -18,12 +22,15 @@ import type {
   PermissionCapability,
   PermissionPolicy,
   UserIdentityProfile,
-} from './src/types/jarvis.ts';
+} from './src/types/shamia.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = Number(process.env.PORT || 3000);
+const PORT =
+  process.env.NODE_ENV === 'production' && process.env.PORT
+    ? Number(process.env.PORT)
+    : 3000;
 
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
@@ -275,7 +282,7 @@ async function createApp() {
     res.json(searchData);
   });
 
-  app.post('/api/jarvis/chat', async (req, res) => {
+  app.post('/api/shamia/chat', async (req, res) => {
     const body = (req.body || {}) as ChatRequestBody;
     const message = typeof body.message === 'string' ? body.message.trim() : '';
 
@@ -297,6 +304,56 @@ async function createApp() {
       );
 
     const ai = getGeminiClient();
+
+    // Free online open-source Hugging Face Router fallback if HF_TOKEN is set and Gemini isn't
+    if (!ai && process.env.HF_TOKEN && process.env.HF_TOKEN !== 'MY_HUGGINGFACE_TOKEN') {
+      try {
+        let searchSummary = '';
+        let links: GroundingLink[] = [];
+        if (useResearch) {
+          const freeSearch = await executeFreeOpenWebSearch(message);
+          searchSummary = freeSearch.summary;
+          links = freeSearch.results.map((r) => ({ title: r.title, uri: r.url }));
+        }
+        const hfRes = await fetch('https://router.huggingface.co/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${process.env.HF_TOKEN.trim()}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'Qwen/Qwen2.5-1.5B-Instruct',
+            messages: [
+              {
+                role: 'system',
+                content: `You are S.H.A.M.I.A., created by Md Shabbir Mia. Always address the user respectfully as "${addr}". Keep replies concise and human-like.${
+                  searchSummary ? `\nLive web context: ${searchSummary}` : ''
+                }`,
+              },
+              { role: 'user', content: message },
+            ],
+            max_tokens: 220,
+          }),
+          signal: AbortSignal.timeout(12000),
+        });
+        if (hfRes.ok) {
+          const hfJson = (await hfRes.json()) as {
+            choices?: Array<{ message?: { content?: string } }>;
+          };
+          const hfText = hfJson.choices?.[0]?.message?.content?.trim();
+          if (hfText) {
+            res.json({
+              replyText: hfText,
+              groundingLinks: links,
+              source: useResearch ? 'cloud-research' : 'cloud-gemini',
+            });
+            return;
+          }
+        }
+      } catch {
+        // Fall through to free web search or clear fallback notice
+      }
+    }
 
     // If cloud Gemini key isn't configured, still provide free real-time open web search when asked!
     if (!ai) {
@@ -612,7 +669,10 @@ async function createApp() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR !== 'true',
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

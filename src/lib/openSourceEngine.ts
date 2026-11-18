@@ -1,4 +1,4 @@
-import type { GroundingLink, OpenSourceModelSpec, UserIdentityProfile } from '../types/jarvis';
+import type { GroundingLink, OpenSourceModelSpec, UserIdentityProfile } from '../types/shamia';
 
 export interface DeviceHardwareReport {
   webGpuAvailable: boolean;

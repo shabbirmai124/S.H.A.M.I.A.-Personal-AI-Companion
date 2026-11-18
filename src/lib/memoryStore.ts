@@ -9,10 +9,12 @@ import type {
   PermissionRule,
   TaskItem,
   UserIdentityProfile,
-} from '../types/jarvis';
+} from '../types/shamia';
 
 export const SYSTEM_NAME = 'S.H.A.M.I.A.';
 export const SYSTEM_MEANING = 'Smart Human-aligned Assistant & Mindful Interactive Aid';
+export const AUTHOR_NAME = 'Md Shabbir Mia';
+export const AUTHOR_EMAIL = 'shabbirmia520@gmail.com';
 
 export const DEFAULT_USER_IDENTITY: UserIdentityProfile = {
   fullName: 'Md Shabbir Mia',

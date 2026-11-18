@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Check, Cpu, Download, Globe, Loader2, Smartphone } from 'lucide-react';
 import { OPEN_SOURCE_MODEL_CATALOG } from '../lib/memoryStore';
 import { browserModelRunner, detectDeviceHardware } from '../lib/openSourceEngine';
-import type { OpenSourceModelSpec } from '../types/jarvis';
+import type { OpenSourceModelSpec } from '../types/shamia';
 
 interface OpenSourceModelHubProps {
   selectedModelId: string;
@@ -139,6 +139,8 @@ export function OpenSourceModelHub({
             const active = selectedModelId === model.id;
             const isWebGpu = model.runtime === 'webgpu';
             const isLoadedInBrowser = loadedBrowserId === model.id;
+            const meetsRam =
+              hardware.deviceMemoryGb === null || hardware.deviceMemoryGb >= model.minRamGb;
             return (
               <li
                 key={model.id}
@@ -155,7 +157,10 @@ export function OpenSourceModelHub({
                       <span className="truncate">{model.name}</span>
                     </p>
                     <p className="text-[11px] text-[#94A3B8] mt-0.5">
-                      {model.params} · {model.sizeLabel} · {model.minRamGb}GB+ RAM
+                      {model.params} · {model.sizeLabel} · {model.minRamGb}GB+ RAM ·{' '}
+                      <span className={meetsRam ? 'text-emerald-400' : 'text-amber-300'}>
+                        {meetsRam ? 'Compatible' : 'Low RAM'}
+                      </span>
                     </p>
                   </div>
                   <button

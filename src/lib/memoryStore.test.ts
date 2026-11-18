@@ -9,7 +9,7 @@ import {
   formatCountdown,
   toggleTaskItem,
 } from './memoryStore';
-import { extractCoachingTip } from './jarvisPrompts';
+import { extractCoachingTip } from './shamiaPrompts';
 
 test('task reducers add, toggle, and clear completed items properly', () => {
   let tasks = addTaskItem([], 'Inspect Mark VII thrusters', 'high', 't1', '2026-11-17T09:00:00Z');
@@ -38,8 +38,8 @@ test('note and alarm reducers plus countdown formatting work accurately', () => 
 
 test('extractCoachingTip strips structured tag and parses tip cleanly', () => {
   const raw =
-    'Splendid effort, Sir Epalse. Tell me more about your project.\n[COACH_TIP]{"correction":"I have been working","naturalPhrase":"I have been focusing on","tip":"Use present perfect continuous for ongoing work."}[/COACH_TIP]';
+    'Splendid effort, Sir. Tell me more about your project.\n[COACH_TIP]{"correction":"I have been working","naturalPhrase":"I have been focusing on","tip":"Use present perfect continuous for ongoing work."}[/COACH_TIP]';
   const result = extractCoachingTip(raw);
-  assert.equal(result.cleanText, 'Splendid effort, Sir Epalse. Tell me more about your project.');
+  assert.equal(result.cleanText, 'Splendid effort, Sir. Tell me more about your project.');
   assert.equal(result.coachingTip?.naturalPhrase, 'I have been focusing on');
 });

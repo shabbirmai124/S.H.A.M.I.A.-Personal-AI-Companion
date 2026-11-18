@@ -8,7 +8,7 @@ import {
   Sun,
   Wifi,
 } from 'lucide-react';
-import type { DeviceControlState } from '../types/jarvis';
+import type { DeviceControlState } from '../types/shamia';
 
 interface DeviceControlDeckProps {
   controls: DeviceControlState;

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { UserCheck, X } from 'lucide-react';
-import { SYSTEM_MEANING, SYSTEM_NAME } from '../lib/memoryStore';
-import type { UserIdentityProfile } from '../types/jarvis';
+import { AUTHOR_EMAIL, AUTHOR_NAME, SYSTEM_MEANING, SYSTEM_NAME } from '../lib/memoryStore';
+import type { UserIdentityProfile } from '../types/shamia';
 
 interface AccountIdentityModalProps {
   identity: UserIdentityProfile;
@@ -46,6 +46,9 @@ export function AccountIdentityModal({
             </h2>
             <p className="text-xs text-[#94A3B8] mt-1 leading-relaxed">
               <span className="text-[#38BDF8] font-medium">{SYSTEM_NAME}</span> — {SYSTEM_MEANING}
+            </p>
+            <p className="text-[11px] text-[#64748B] mt-0.5">
+              Created by {AUTHOR_NAME} · {AUTHOR_EMAIL}
             </p>
           </div>
           <button

@@ -21,9 +21,9 @@ import { MemoryAndPermissionsPanel } from './components/MemoryAndPermissionsPane
 import { QuantumCore } from './components/QuantumCore';
 import {
   createVoiceRecognizer,
-  jarvisAudio,
-  speakJarvis,
-  stopSpeakingJarvis,
+  shamiaAudio,
+  speakShamia,
+  stopSpeakingShamia,
   type VoiceRecognitionHandle,
 } from './lib/audioEngine';
 import {
@@ -34,7 +34,7 @@ import {
   resolveSupportedApp,
   validatePhoneNumber,
 } from './lib/intentEngine';
-import { buildShamiaSystemInstruction } from './lib/jarvisPrompts';
+import { buildShamiaSystemInstruction } from './lib/shamiaPrompts';
 import {
   addAlarmItem,
   addNoteItem,
@@ -74,7 +74,7 @@ import type {
   PermissionRule,
   TaskItem,
   UserIdentityProfile,
-} from './types/jarvis';
+} from './types/shamia';
 
 const STORAGE_KEYS = {
   tasks: 'shamia.tasks.v1',
@@ -247,7 +247,7 @@ export default function App() {
         });
         if (fired) {
           const alarmRef: AlarmItem = fired;
-          jarvisAudio.playChime();
+          shamiaAudio.playChime();
           const notice = `Excuse the interruption, ${addr}. Your alarm "${alarmRef.label}" is ringing now.`;
           setMessages((msgs) => [
             ...msgs,
@@ -259,7 +259,7 @@ export default function App() {
               source: 'offline-core',
             },
           ]);
-          speakJarvis(notice, {
+          speakShamia(notice, {
             enabled: voiceOutputEnabled,
             onStart: () => setIsSpeaking(true),
             onEnd: () => setIsSpeaking(false),
@@ -315,8 +315,8 @@ export default function App() {
         batteryObj.removeEventListener('levelchange', syncBattery);
         batteryObj.removeEventListener('chargingchange', syncBattery);
       }
-      jarvisAudio.stopTrack();
-      stopSpeakingJarvis();
+      shamiaAudio.stopTrack();
+      stopSpeakingShamia();
     };
   }, []);
 
@@ -326,7 +326,7 @@ export default function App() {
 
   const speakReply = useCallback(
     (text: string) => {
-      speakJarvis(text, {
+      speakShamia(text, {
         enabled: voiceOutputEnabled,
         onStart: () => setIsSpeaking(true),
         onEnd: () => setIsSpeaking(false),
@@ -392,7 +392,7 @@ export default function App() {
           const idx = matchedIndex >= 0 ? matchedIndex : trackIndex;
           const track = MUSIC_TRACKS[idx];
           setTrackIndex(idx);
-          const started = jarvisAudio.startTrack(track, musicVolume);
+          const started = shamiaAudio.startTrack(track, musicVolume);
           setMusicActive(true);
           setMusicPlaying(started);
           return `Now playing "${track.title}", ${addr}.`;
@@ -737,7 +737,7 @@ export default function App() {
 
         // Engine C: Cloud Free Open Web + Server AI
         if (selectedModel.runtime === 'cloud') {
-          const res = await fetch('/api/jarvis/chat', {
+          const res = await fetch('/api/shamia/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -868,7 +868,7 @@ export default function App() {
 
   const handleToggleListen = useCallback(() => {
     if (isSpeaking) {
-      stopSpeakingJarvis();
+      stopSpeakingShamia();
       setIsSpeaking(false);
     }
 
@@ -936,10 +936,10 @@ export default function App() {
 
   const handleToggleMusic = () => {
     if (musicPlaying) {
-      jarvisAudio.stopTrack();
+      shamiaAudio.stopTrack();
       setMusicPlaying(false);
     } else {
-      const ok = jarvisAudio.startTrack(activeTrack, musicVolume);
+      const ok = shamiaAudio.startTrack(activeTrack, musicVolume);
       setMusicPlaying(ok);
     }
   };
@@ -948,19 +948,19 @@ export default function App() {
     const nextIdx = (trackIndex + 1) % MUSIC_TRACKS.length;
     setTrackIndex(nextIdx);
     if (musicPlaying) {
-      jarvisAudio.startTrack(MUSIC_TRACKS[nextIdx], musicVolume);
+      shamiaAudio.startTrack(MUSIC_TRACKS[nextIdx], musicVolume);
     }
   };
 
   const handleStopMusic = () => {
-    jarvisAudio.stopTrack();
+    shamiaAudio.stopTrack();
     setMusicPlaying(false);
     setMusicActive(false);
   };
 
   const handleVolumeChange = (val: number) => {
     setMusicVolume(val);
-    jarvisAudio.setVolume(val);
+    shamiaAudio.setVolume(val);
   };
 
   const currentClock = new Date(nowMs).toLocaleTimeString([], {
@@ -1048,7 +1048,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
-              if (voiceOutputEnabled) stopSpeakingJarvis();
+              if (voiceOutputEnabled) stopSpeakingShamia();
               setVoiceOutputEnabled((v) => !v);
             }}
             aria-label={voiceOutputEnabled ? 'Mute spoken voice' : 'Enable spoken voice'}
@@ -1257,11 +1257,11 @@ export default function App() {
               <Globe className="w-4 h-4" />
             </button>
 
-            <label className="sr-only" htmlFor="jarvis-command-input">
+            <label className="sr-only" htmlFor="shamia-command-input">
               Message {SYSTEM_NAME}
             </label>
             <input
-              id="jarvis-command-input"
+              id="shamia-command-input"
               type="text"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
