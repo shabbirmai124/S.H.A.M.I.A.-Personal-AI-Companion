@@ -215,6 +215,8 @@ export default function App() {
 
   const logEndRef = useRef<HTMLDivElement | null>(null);
   const recognizerRef = useRef<VoiceRecognitionHandle | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const activeRequestIdRef = useRef<number>(0);
 
   const permissionMap = useMemo(() => policiesRecordFromRules(permissions), [permissions]);
   const selectedModel: OpenSourceModelSpec = useMemo(() => {
@@ -273,6 +275,10 @@ export default function App() {
   }, [selectedModelId]);
 
   useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.voicePersona, JSON.stringify(voicePersona));
+  }, [voicePersona]);
+
+  useEffect(() => {
     window.localStorage.setItem(STORAGE_KEYS.ollamaUrl, JSON.stringify(ollamaUrl));
   }, [ollamaUrl]);
 
@@ -322,6 +328,7 @@ export default function App() {
           ]);
           speakShamia(notice, {
             enabled: voiceOutputEnabled,
+            persona: voicePersona,
             onStart: () => setIsSpeaking(true),
             onEnd: () => setIsSpeaking(false),
           });
@@ -330,7 +337,7 @@ export default function App() {
       });
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [addr, voiceOutputEnabled]);
+  }, [addr, voiceOutputEnabled, voicePersona]);
 
   // Online/offline + Battery API listeners
   useEffect(() => {
@@ -389,12 +396,109 @@ export default function App() {
     (text: string) => {
       speakShamia(text, {
         enabled: voiceOutputEnabled,
+        persona: voicePersona,
         onStart: () => setIsSpeaking(true),
         onEnd: () => setIsSpeaking(false),
       });
     },
-    [voiceOutputEnabled]
+    [voiceOutputEnabled, voicePersona]
   );
+
+  const handleStopResponse = useCallback(() => {
+    const wasThinking = isThinking;
+    activeRequestIdRef.current += 1;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    stopSpeakingShamia();
+    setIsSpeaking(false);
+    if (isListening) {
+      recognizerRef.current?.stop();
+      setIsListening(false);
+      setInterimVoice('');
+    }
+    setIsThinking(false);
+    if (wasThinking) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `msg-stop-${Date.now()}`,
+          role: 'assistant',
+          text: `Response stopped immediately, ${addr}. Ready whenever you are.`,
+          timestamp: new Date().toISOString(),
+          modelLabel: selectedModel.name,
+          source: selectedModel.runtime === 'built-in' ? 'offline-core' : 'cloud-gemini',
+        },
+      ]);
+    }
+  }, [addr, isListening, isThinking, selectedModel.name, selectedModel.runtime]);
+
+  const handleNewChat = useCallback(() => {
+    activeRequestIdRef.current += 1;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    stopSpeakingShamia();
+    setIsSpeaking(false);
+    setIsThinking(false);
+    setErrorBanner(null);
+    setMessages([
+      {
+        id: `msg-welcome-${Date.now()}`,
+        role: 'assistant',
+        text: `[${selectedModel.name} · ${selectedModel.id}] Fresh conversation started, ${addr}. I am answering strictly from ${selectedModel.name}.`,
+        timestamp: new Date().toISOString(),
+        modelLabel: selectedModel.name,
+        source: selectedModel.runtime === 'built-in' ? 'offline-core' : 'cloud-gemini',
+      },
+    ]);
+  }, [addr, selectedModel.id, selectedModel.name, selectedModel.runtime]);
+
+  const handleSelectModel = useCallback(
+    (spec: OpenSourceModelSpec) => {
+      activeRequestIdRef.current += 1;
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      stopSpeakingShamia();
+      setIsSpeaking(false);
+      setIsThinking(false);
+      setSelectedModelId(spec.id);
+      setEnsembleEnabled(false);
+      console.info('[S.H.A.M.I.A. Model Switch] Active model locked to:', {
+        modelId: spec.id,
+        modelName: spec.name,
+        runtime: spec.runtime,
+      });
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `msg-switch-${Date.now()}`,
+          role: 'assistant',
+          text: `[${spec.name} · ${spec.id}] Active model switched to ${spec.name}, ${addr}. All responses now come strictly from this model.`,
+          timestamp: new Date().toISOString(),
+          modelLabel: spec.name,
+          source: spec.runtime === 'built-in' ? 'offline-core' : 'cloud-gemini',
+        },
+      ]);
+    },
+    [addr]
+  );
+
+  // Allow pressing Escape key at any time to immediately stop a frozen/running response or voice
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && (isThinking || isSpeaking || isListening)) {
+        e.preventDefault();
+        handleStopResponse();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleStopResponse, isListening, isSpeaking, isThinking]);
 
   const updatePermissionPolicy = useCallback(
     (capability: PermissionCapability, policy: PermissionPolicy) => {

@@ -47,7 +47,50 @@ function getGeminiClient(): GoogleGenAI | null {
   }
   return new GoogleGenAI({
     apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
   });
+}
+
+function ensureModelPrefix(text: string, modelLabel: string, modelId: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+  // Remove any accidental wrong model bracket prefix if present
+  const stripped = trimmed.replace(/^\[[^\]]{2,80}\]\s*/, '');
+  const shortLabel = modelLabel.split('·')[0].trim();
+  return `[${shortLabel} · ${modelId}] ${stripped}`;
+}
+
+function buildValidAlternatingTurns(
+  history: Array<{ role: 'user' | 'assistant'; text: string }> | undefined,
+  currentMessage: string
+): Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> {
+  const turns: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+  for (const item of (history || []).slice(-8)) {
+    const clean = (item.text || '').replace(/^\[[^\]]{2,80}\]\s*/, '').trim();
+    if (!clean) continue;
+    const role: 'user' | 'model' = item.role === 'user' ? 'user' : 'model';
+    // Gemini API requires multi-turn contents to start with 'user'
+    if (turns.length === 0 && role === 'model') {
+      continue;
+    }
+    const prev = turns[turns.length - 1];
+    if (prev && prev.role === role) {
+      prev.parts[0].text = `${prev.parts[0].text}\n${clean}`;
+    } else {
+      turns.push({ role, parts: [{ text: clean }] });
+    }
+  }
+  const last = turns[turns.length - 1];
+  if (last && last.role === 'user') {
+    last.parts[0].text = `${last.parts[0].text}\n${currentMessage}`;
+  } else {
+    turns.push({ role: 'user', parts: [{ text: currentMessage }] });
+  }
+  return turns;
 }
 
 function decodeXmlEntities(raw: string): string {

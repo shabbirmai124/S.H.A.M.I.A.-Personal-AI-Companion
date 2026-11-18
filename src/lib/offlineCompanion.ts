@@ -71,10 +71,14 @@ export function generateOfflineCompanionReply(
   const intent = detectConversationalIntent(trimmed);
 
   // 1. Identity / Name / Active Model question
-  if (/\b(your name|who are you|what is shamia|meaning of shamia|shamia|which model|what model)\b/i.test(lower)) {
+  if (
+    /\b(your name|who are you|what is shamia|meaning of shamia|which\s+(?:ai\s+)?model|what\s+(?:ai\s+)?model|model\s+am\s+i\s+using|model\s+are\s+you|active\s+model|current\s+model)\b/i.test(
+      lower
+    )
+  ) {
     return {
       intent: 'general',
-      text: `[${activeModelLabel} · ID: ${activeModelId}] I am S.H.A.M.I.A.—Smart Human-aligned Assistant & Mindful Interactive Aid—created by and for ${fullName}, ${addr}. I am currently running on ${activeModelLabel} (${activeModelId}).`,
+      text: `[${activeModelLabel} · ID: ${activeModelId}] You are currently using **${activeModelLabel}** (model ID: \`${activeModelId}\`), ${addr}. I am S.H.A.M.I.A., created by and for ${fullName}, and I am generating responses strictly from ${activeModelLabel}.`,
     };
   }
 
