@@ -10,7 +10,7 @@ import {
   validatePhoneNumber,
 } from './intentEngine';
 import { DEFAULT_DEVICE_CONTROLS } from './memoryStore';
-import { generateOfflineCompanionReply } from './offlineCompanion';
+import { cleanHtmlArtifacts, generateOfflineCompanionReply } from './offlineCompanion';
 import type { PermissionCapability, PermissionPolicy } from '../types/shamia';
 
 const basePolicies: Record<PermissionCapability, PermissionPolicy> = {
@@ -89,20 +89,56 @@ test('offlineCompanion provides real-time English grammar tips and breathing sup
   const eng = generateOfflineCompanionReply(
     'Yesterday I am going to office and discuss about plan',
     'Sir',
-    'Md Shabbir Mia'
+    'Md Shabbir Mia',
+    'gemma-4-free',
+    'Gemma 4 · Real-Time Search'
   );
   assert.equal(eng.intent, 'english-tutor');
   assert.ok(eng.text.includes('Sir'));
+  assert.ok(eng.text.includes('Gemma 4 · Real-Time Search'));
+  assert.ok(!eng.text.includes('DeepSeek'));
   assert.ok(eng.coachingTip?.naturalPhrase);
 
   const mental = generateOfflineCompanionReply(
     'I feel really anxious and overwhelmed right now',
     'Sir',
-    'Md Shabbir Mia'
+    'Md Shabbir Mia',
+    'gpt-oss-20b-free',
+    'GPT-OSS 20B (Open Weights)'
   );
   assert.equal(mental.intent, 'mental-support');
   assert.equal(mental.showBreathingTool, true);
-  assert.ok(mental.text.includes('Sir'));
+  assert.ok(mental.text.includes('GPT-OSS 20B (Open Weights)'));
+  assert.ok(!mental.text.includes('DeepSeek'));
+});
+
+test('active model identity check reports exact selected model and never defaults to DeepSeek', () => {
+  const gemmaCheck = generateOfflineCompanionReply(
+    'which ai model am i using ?',
+    'mam',
+    'Kajol',
+    'gemma-4-free',
+    'Gemma 4 · Real-Time Search'
+  );
+  assert.ok(gemmaCheck.text.includes('[Gemma 4 · Real-Time Search · ID: gemma-4-free]'));
+  assert.ok(!gemmaCheck.text.includes('DeepSeek'));
+
+  const gptCheck = generateOfflineCompanionReply(
+    'which ai model am i using ?',
+    'mam',
+    'Kajol',
+    'gpt-oss-20b-free',
+    'GPT-OSS 20B (Open Weights)'
+  );
+  assert.ok(gptCheck.text.includes('[GPT-OSS 20B (Open Weights) · ID: gpt-oss-20b-free]'));
+  assert.ok(!gptCheck.text.includes('DeepSeek'));
+});
+
+test('cleanHtmlArtifacts decodes HTML entities and strips broken tags from search snippets', () => {
+  const dirty =
+    'Francis Scott Key&#039;s &quot;The Star-Spangled Banner&quot; &amp; <b>4nm</b> chips';
+  const cleaned = cleanHtmlArtifacts(dirty);
+  assert.equal(cleaned, 'Francis Scott Key\'s "The Star-Spangled Banner" & 4nm chips');
 });
 
 test('parseAlarmRequest parses relative minutes accurately', () => {

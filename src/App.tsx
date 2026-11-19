@@ -747,7 +747,16 @@ export default function App() {
   const sendCommand = useCallback(
     async (rawText: string, options?: { forceWebSearch?: boolean }) => {
       const trimmed = rawText.trim();
-      if (!trimmed || isThinking) return;
+      if (!trimmed) return;
+
+      // If a previous request is still running, abort it cleanly before starting the new one
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+      const requestId = ++activeRequestIdRef.current;
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
 
       setErrorBanner(null);
       setInputText('');
@@ -763,10 +772,17 @@ export default function App() {
       };
       setMessages((prev) => [...prev, userMsg]);
 
-      // 1. Check instant offline device & action intent engine first
-      const wantsSearch = shouldTriggerLiveSearch(trimmed, options?.forceWebSearch);
+      // Check if user is asking which AI model is currently active
+      const isModelCheckQuery =
+        /\b(which\s+(?:ai\s+)?model|what\s+(?:ai\s+)?model|model\s+am\s+i\s+using|model\s+are\s+you|active\s+model|current\s+model|running\s+on\s+right\s+now)\b/i.test(
+          trimmed
+        );
 
-      if (!wantsSearch) {
+      // 1. Check instant offline device & action intent engine first (skip for model identity or live web search)
+      const wantsSearch =
+        !isModelCheckQuery && shouldTriggerLiveSearch(trimmed, options?.forceWebSearch);
+
+      if (!wantsSearch && !isModelCheckQuery) {
         const local = matchLocalIntent(trimmed, {
           now: new Date(),
           addressAs: addr,
@@ -781,7 +797,7 @@ export default function App() {
           if (local.directMemoryMutation) {
             const memVerdict = evaluatePermission(permissionMap, 'manage_memory');
             if (memVerdict === 'deny') {
-              const refusal = `Memory storage is set to Deny in your Permission Vault, ${addr}.`;
+              const refusal = `[${selectedModel.name} · ID: ${selectedModel.id}] Memory storage is set to Deny in your Permission Vault, ${addr}.`;
               setMessages((prev) => [
                 ...prev,
                 {
@@ -790,6 +806,7 @@ export default function App() {
                   text: refusal,
                   timestamp: new Date().toISOString(),
                   source: 'permission-gate',
+                  modelLabel: selectedModel.name,
                 },
               ]);
               speakReply(refusal);
@@ -806,14 +823,16 @@ export default function App() {
           }
 
           if (local.replyText) {
+            const taggedLocalReply = `[${selectedModel.name} · ID: ${selectedModel.id}] ${local.replyText}`;
             setMessages((prev) => [
               ...prev,
               {
                 id: `msg-j-${Date.now()}`,
                 role: 'assistant',
-                text: local.replyText!,
+                text: taggedLocalReply,
                 timestamp: new Date().toISOString(),
-                source: 'offline-core',
+                source: selectedModel.runtime === 'built-in' ? 'offline-core' : 'cloud-gemini',
+                modelLabel: selectedModel.name,
               },
             ]);
             speakReply(local.replyText);
@@ -822,41 +841,38 @@ export default function App() {
         }
       }
 
-      // 2. Route conversational / web search / open-source 2B model queries
+      // 2. Route conversational / web search / open-source model queries strictly to the active selectedModel
       setIsThinking(true);
+      console.info('[S.H.A.M.I.A. Dispatch] Sending prompt to active model:', {
+        modelId: selectedModel.id,
+        modelName: selectedModel.name,
+        runtime: selectedModel.runtime,
+        ensembleEnabled,
+      });
+
       try {
         let groundingLinks: GroundingLink[] = [];
         let webSummary = '';
 
-        if (wantsSearch && webSearchEnabled && isOnline) {
-          try {
-            const searchRes = await runFreeWebSearch(trimmed);
-            groundingLinks = searchRes.links;
-            webSummary = searchRes.summary;
-          } catch {
-            // Continue gracefully without live search if unreachable
-          }
-        }
-
-        // Engine A: In-Browser WebGPU Open-Source Model (if cached/selected for offline or network is down)
+        // Engine A: In-Browser WebGPU Open-Source Model (only if explicitly installed & loaded in browser memory)
         if (
+          !ensembleEnabled &&
           selectedModel.hfRepo &&
           (selectedModel.runtime === 'webgpu' || !isOnline) &&
-          browserModelRunner.getLoadedModelId() !== selectedModel.id &&
-          browserModelRunner.getInstalledModelIds().includes(selectedModel.id)
+          browserModelRunner.getLoadedModelId() === selectedModel.id
         ) {
-          try {
-            await browserModelRunner.loadModel(selectedModel, () => {});
-          } catch {
-            // Fall through gracefully
+          if (wantsSearch && webSearchEnabled && isOnline) {
+            try {
+              const searchRes = await runFreeWebSearch(trimmed);
+              groundingLinks = searchRes.links;
+              webSummary = searchRes.summary;
+            } catch {
+              // Continue gracefully
+            }
           }
-        }
-
-        if (
-          browserModelRunner.getLoadedModelId() === selectedModel.id &&
-          (selectedModel.runtime === 'webgpu' || !isOnline)
-        ) {
-          const reply = await browserModelRunner.generate(trimmed, identity, webSummary);
+          const rawReply = await browserModelRunner.generate(trimmed, identity, webSummary);
+          if (requestId !== activeRequestIdRef.current) return;
+          const reply = `[${selectedModel.name} · ID: ${selectedModel.id}] ${rawReply.replace(/^\[[^\]]+\]\s*/, '')}`;
           setMessages((prev) => [
             ...prev,
             {
@@ -871,30 +887,45 @@ export default function App() {
               showBreathingTool: detectedIntent === 'mental-support',
             },
           ]);
-          speakReply(reply);
+          speakReply(rawReply);
           return;
         }
 
-        // Engine B: Local Ollama 2B / 8B / 20B Phone/Desktop Model
+        // Engine B: Local Ollama Model (if runtime is explicitly set to 'ollama')
         if (selectedModel.runtime === 'ollama' && selectedModel.ollamaTag && !ensembleEnabled) {
+          if (wantsSearch && webSearchEnabled && isOnline) {
+            try {
+              const searchRes = await runFreeWebSearch(trimmed);
+              groundingLinks = searchRes.links;
+              webSummary = searchRes.summary;
+            } catch {
+              // Continue gracefully
+            }
+          }
           const sys = buildShamiaSystemInstruction(
             identity,
             detectedIntent,
             permissionMap,
             tasks.filter((t) => !t.completed).map((t) => t.title),
             routine.filter((r) => !r.completed).map((r) => `${r.timeLabel}: ${r.title}`),
-            syllabus.filter((s) => !s.completed).map((s) => `${s.courseCode} ${s.courseTitle} — ${s.topic}`)
+            syllabus
+              .filter((s) => !s.completed)
+              .map((s) => `${s.courseCode} ${s.courseTitle} — ${s.topic}`),
+            selectedModel.id,
+            selectedModel.name
           );
           const promptWithWeb = webSummary
-            ? `${trimmed}\n\n[Real-Time Google & Web Context]: ${webSummary}`
+            ? `${trimmed}\n\n[Real-Time Web Context — Synthesize constructively in your own words]: ${webSummary}`
             : trimmed;
-          const reply = await queryLocalOllama({
+          const rawReply = await queryLocalOllama({
             endpoint: ollamaUrl,
             modelTag: selectedModel.ollamaTag,
             prompt: promptWithWeb,
             systemInstruction: sys,
             history: messages.slice(-6).map((m) => ({ role: m.role, text: m.text })),
           });
+          if (requestId !== activeRequestIdRef.current) return;
+          const reply = `[${selectedModel.name} · ID: ${selectedModel.id}] ${rawReply.replace(/^\[[^\]]+\]\s*/, '')}`;
           setMessages((prev) => [
             ...prev,
             {
@@ -909,21 +940,22 @@ export default function App() {
               showBreathingTool: detectedIntent === 'mental-support',
             },
           ]);
-          speakReply(reply);
+          speakReply(rawReply);
           return;
         }
 
-        // Engine C: Free Online Open-Source Gemma 4 / Qwen 3 / MiniCPM-o / GLM-4 / GPT-OSS 20B / Multi-Model Ensemble + Google Search
-        if ((selectedModel.runtime === 'cloud' || ensembleEnabled) && isOnline) {
+        // Engine C: Active Model Backend Router (/api/shamia/chat handles all 14 open-weight models + live search synthesis)
+        if (isOnline) {
           try {
             const res = await fetch('/api/shamia/chat', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
+              signal: controller.signal,
               body: JSON.stringify({
                 message: trimmed,
                 modelId: selectedModel.id,
-                modelLabel: selectedModel.name.split('·')[0].trim(),
-                history: messages.slice(-8).map((m) => ({ role: m.role, text: m.text })),
+                modelLabel: selectedModel.name,
+                history: messages.slice(-6).map((m) => ({ role: m.role, text: m.text })),
                 identity,
                 detectedIntent,
                 permissions: permissionMap,
@@ -938,10 +970,13 @@ export default function App() {
               }),
             });
 
+            if (requestId !== activeRequestIdRef.current) return;
+
             const data = (await res.json()) as {
               error?: string;
               replyText?: string;
               modelLabel?: string;
+              activeModelId?: string;
               proposedAction?: Omit<PendingAction, 'id' | 'status' | 'createdAt'>;
               directMemoryMutation?:
                 | { kind: 'add_task'; title: string; priority: 'high' | 'normal' }
@@ -954,7 +989,16 @@ export default function App() {
             };
 
             if (res.ok) {
-              if (data.directMemoryMutation && evaluatePermission(permissionMap, 'manage_memory') === 'allow') {
+              console.info('[S.H.A.M.I.A. Response Verified]', {
+                requestedModelId: selectedModel.id,
+                processedByModelId: data.activeModelId || selectedModel.id,
+                processedByModelLabel: data.modelLabel || selectedModel.name,
+              });
+
+              if (
+                data.directMemoryMutation &&
+                evaluatePermission(permissionMap, 'manage_memory') === 'allow'
+              ) {
                 applyDirectMemoryMutation(data.directMemoryMutation);
               }
 
@@ -963,7 +1007,11 @@ export default function App() {
                 return;
               }
 
-              const finalReply = data.replyText || `How can I help further, ${addr}?`;
+              const confirmedLabel = data.modelLabel || selectedModel.name;
+              const finalReply =
+                data.replyText ||
+                `[${confirmedLabel} · ID: ${selectedModel.id}] How can I help further, ${addr}?`;
+
               setMessages((prev) => [
                 ...prev,
                 {
@@ -972,8 +1020,10 @@ export default function App() {
                   text: finalReply,
                   timestamp: new Date().toISOString(),
                   intent: detectedIntent,
-                  source: data.source || 'cloud-gemini',
-                  modelLabel: data.modelLabel || selectedModel.name,
+                  source:
+                    data.source ||
+                    (selectedModel.id === 'offline-core' ? 'offline-core' : 'cloud-gemini'),
+                  modelLabel: confirmedLabel,
                   coachingTip: data.coachingTip,
                   showBreathingTool: data.showBreathingTool,
                   groundingLinks:
@@ -982,34 +1032,32 @@ export default function App() {
                       : groundingLinks,
                 },
               ]);
-              speakReply(finalReply);
+              speakReply(finalReply.replace(/^\[[^\]]+\]\s*/, ''));
               return;
             }
-          } catch {
-            // Fall through gracefully to offline companion / cached local model
+          } catch (fetchErr: unknown) {
+            if (
+              (fetchErr instanceof DOMException && fetchErr.name === 'AbortError') ||
+              controller.signal.aborted ||
+              requestId !== activeRequestIdRef.current
+            ) {
+              return;
+            }
+            // Fall through to local synthesis strictly preserving selectedModel.id & selectedModel.name
           }
         }
 
-        // Engine D: Built-In Offline Core (or WebGPU fallback before download) + Live Web Search
-        if (wantsSearch && webSummary) {
-          const searchReply = `Here is what live open web search found, ${addr}: ${webSummary}`;
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `msg-j-${Date.now()}`,
-              role: 'assistant',
-              text: searchReply,
-              timestamp: new Date().toISOString(),
-              intent: 'general',
-              source: 'cloud-research',
-              groundingLinks,
-            },
-          ]);
-          speakReply(searchReply);
-          return;
-        }
+        if (requestId !== activeRequestIdRef.current || controller.signal.aborted) return;
 
-        const offlineReply = generateOfflineCompanionReply(trimmed, addr, identity.fullName);
+        // Engine D: Local Resilient Companion strictly bound to selectedModel.id and selectedModel.name
+        const offlineReply = generateOfflineCompanionReply(
+          trimmed,
+          addr,
+          identity.fullName,
+          selectedModel.id,
+          selectedModel.name,
+          webSummary
+        );
         setMessages((prev) => [
           ...prev,
           {
@@ -1018,21 +1066,28 @@ export default function App() {
             text: offlineReply.text,
             timestamp: new Date().toISOString(),
             intent: offlineReply.intent,
-            source: 'offline-core',
+            source: selectedModel.id === 'offline-core' ? 'offline-core' : 'cloud-gemini',
+            modelLabel: selectedModel.name,
             coachingTip: offlineReply.coachingTip,
             showBreathingTool: offlineReply.showBreathingTool,
             groundingLinks,
           },
         ]);
-        speakReply(offlineReply.text);
+        speakReply(offlineReply.text.replace(/^\[[^\]]+\]\s*/, ''));
       } catch (err: unknown) {
+        if (controller.signal.aborted || requestId !== activeRequestIdRef.current) {
+          return;
+        }
         const msg =
           err instanceof Error
             ? err.message
-            : `Unable to reach the selected model, ${addr}. Built-in Offline Core remains active.`;
+            : `Unable to reach ${selectedModel.name}, ${addr}.`;
         setErrorBanner(msg);
       } finally {
-        setIsThinking(false);
+        if (requestId === activeRequestIdRef.current) {
+          setIsThinking(false);
+          abortControllerRef.current = null;
+        }
       }
     },
     [
@@ -1046,7 +1101,6 @@ export default function App() {
       ensembleModelIds,
       identity,
       isOnline,
-      isThinking,
       messages,
       ollamaUrl,
       permissionMap,
@@ -1213,9 +1267,9 @@ export default function App() {
       )}
 
       {/* Minimal Executive Header */}
-      <header className="relative z-10 shrink-0 h-14 px-4 sm:px-6 border-b border-white/[0.08] bg-[#070A0F]/85 backdrop-blur-xl flex items-center justify-between gap-4">
-        {/* Left: Wordmark + Active Model Selector */}
-        <div className="flex items-center gap-3 min-w-0">
+      <header className="relative z-10 shrink-0 h-14 px-4 sm:px-6 border-b border-white/[0.08] bg-[#070A0F]/85 backdrop-blur-xl flex items-center justify-between gap-3">
+        {/* Left: Wordmark + Active Model Selector + New Chat */}
+        <div className="flex items-center gap-2.5 min-w-0">
           <span className="font-display text-lg font-semibold tracking-wider text-[#E8EEF3] whitespace-nowrap shrink-0">
             {SYSTEM_NAME}
           </span>
@@ -1224,17 +1278,40 @@ export default function App() {
             type="button"
             onClick={() => setRightTab('models')}
             title="Switch open-source model or ensemble"
-            className="hidden sm:inline-flex items-center gap-1.5 min-h-[32px] px-2.5 py-1 rounded-lg bg-[#0D1219] border border-white/[0.08] hover:border-[#38BDF8]/40 text-xs text-[#CBD5E1] hover:text-white transition-colors truncate"
+            className="hidden sm:inline-flex items-center gap-1.5 min-h-[34px] px-2.5 py-1 rounded-lg bg-[#0D1219] border border-white/[0.08] hover:border-[#38BDF8]/40 text-xs text-[#CBD5E1] hover:text-white transition-colors truncate"
           >
             <Cpu className="w-3.5 h-3.5 text-[#38BDF8] shrink-0" aria-hidden="true" />
             <span className="truncate">
               {ensembleEnabled ? `Ensemble (${ensembleModelIds.length} Models)` : selectedModel.name}
             </span>
           </button>
+
+          <button
+            type="button"
+            onClick={handleNewChat}
+            title={`Start a new chat with ${selectedModel.name}`}
+            aria-label="Start new chat"
+            className="inline-flex items-center gap-1.5 min-h-[34px] px-2.5 py-1 rounded-lg bg-[#0D1219] border border-white/[0.08] hover:border-[#38BDF8]/40 text-xs font-medium text-[#7DD3FC] hover:text-white transition-colors shrink-0"
+          >
+            <RotateCcw className="w-3.5 h-3.5 shrink-0" aria-hidden="true" />
+            <span>New Chat</span>
+          </button>
         </div>
 
-        {/* Right: Profile, Voice & Mobile Drawer */}
+        {/* Right: Stop (when active), Profile, Voice & Mobile Drawer */}
         <div className="flex items-center gap-2 shrink-0">
+          {(isThinking || isSpeaking) && (
+            <button
+              type="button"
+              onClick={handleStopResponse}
+              aria-label="Stop current response immediately"
+              className="min-h-[38px] px-3 rounded-xl bg-rose-500/20 border border-rose-400/50 text-xs font-semibold text-rose-200 hover:bg-rose-500/30 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <X className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>Stop</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setProfileModalOpen(true)}
@@ -1242,7 +1319,7 @@ export default function App() {
             className="min-h-[38px] px-3 rounded-xl bg-[#0D1219] border border-white/10 text-xs font-medium text-[#E8EEF3] hover:border-[#38BDF8]/40 transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
           >
             <User className="w-3.5 h-3.5 text-[#38BDF8]" aria-hidden="true" />
-            <span className="max-w-[140px] truncate">{identity.fullName}</span>
+            <span className="max-w-[130px] truncate">{identity.fullName}</span>
           </button>
 
           <button
@@ -1318,10 +1395,10 @@ export default function App() {
         <main className="flex flex-col min-h-0 bg-[#080B10]/80 backdrop-blur-xl lg:rounded-2xl lg:border lg:border-white/[0.08] lg:shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] overflow-hidden">
           {/* Mobile Compact Optical Core + Quick Strip */}
           <div className="lg:hidden shrink-0 px-4 pt-3 pb-2 border-b border-white/[0.07] flex flex-col gap-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5 min-w-0">
                 <QuantumCore state={coreState} onToggleListen={handleToggleListen} compact />
-                <span className="text-xs font-medium text-[#94A3B8]">
+                <span className="text-xs font-medium text-[#94A3B8] truncate">
                   {coreState === 'awaiting-permission'
                     ? 'Authorization needed'
                     : coreState === 'listening'
@@ -1331,19 +1408,21 @@ export default function App() {
                         : 'Tap core to speak'}
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setRightTab('models');
-                  setMobileDrawerOpen(true);
-                }}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#0B0F15] border border-white/[0.08] text-[11px] text-[#CBD5E1] max-w-[155px]"
-              >
-                <Cpu className="w-3 h-3 text-[#38BDF8] shrink-0" aria-hidden="true" />
-                <span className="truncate">
-                  {ensembleEnabled ? `Ensemble (${ensembleModelIds.length})` : selectedModel.name}
-                </span>
-              </button>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRightTab('models');
+                    setMobileDrawerOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#0B0F15] border border-white/[0.08] text-[11px] text-[#CBD5E1] max-w-[155px]"
+                >
+                  <Cpu className="w-3 h-3 text-[#38BDF8] shrink-0" aria-hidden="true" />
+                  <span className="truncate">
+                    {ensembleEnabled ? `Ensemble (${ensembleModelIds.length})` : selectedModel.name}
+                  </span>
+                </button>
+              </div>
             </div>
 
             {musicActive && (
@@ -1384,8 +1463,9 @@ export default function App() {
                 userLabel={addr}
                 onResolveAction={handleResolvePendingAction}
                 onSpeakMessage={(text) =>
-                  speakShamia(text, {
+                  speakShamia(text.replace(/^\[[^\]]+\]\s*/, ''), {
                     enabled: true,
+                    persona: voicePersona,
                     onStart: () => setIsSpeaking(true),
                     onEnd: () => setIsSpeaking(false),
                   })
@@ -1394,10 +1474,17 @@ export default function App() {
             ))}
 
             {isThinking && (
-              <div className="py-4 text-xs text-[#7DD3FC] flex items-center gap-2">
+              <div className="py-3 px-3.5 my-2 rounded-xl bg-[#0D131C] border border-[#38BDF8]/25 text-xs text-[#7DD3FC] flex items-center justify-between gap-3">
                 <span>
-                  {SYSTEM_NAME} is thinking, {addr}...
+                  {SYSTEM_NAME} ({selectedModel.name}) is generating response, {addr}...
                 </span>
+                <button
+                  type="button"
+                  onClick={handleStopResponse}
+                  className="min-h-[30px] px-3 py-1 rounded-lg bg-rose-500/20 border border-rose-400/50 text-rose-200 font-semibold hover:bg-rose-500/30 transition-colors shrink-0"
+                >
+                  Stop
+                </button>
               </div>
             )}
 
@@ -1472,23 +1559,35 @@ export default function App() {
               type="text"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              placeholder={`Message ${SYSTEM_NAME}, ${addr}...`}
+              placeholder={`Message ${selectedModel.name.split('·')[0].trim()}, ${addr}...`}
               className="flex-1 min-w-0 min-h-[44px] px-4 py-2.5 rounded-xl bg-[#0D1219] border border-white/10 text-sm text-[#E8EEF3] placeholder:text-[#64748B] focus:outline-none focus:border-[#38BDF8]"
             />
 
-            <button
-              type="submit"
-              disabled={!inputText.trim() || isThinking}
-              aria-label="Send command"
-              className="min-h-[44px] px-4 py-2 rounded-xl bg-[#38BDF8] text-[#06080C] font-semibold text-sm hover:bg-[#7DD3FC] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5 shrink-0"
-            >
-              <Send className="w-4 h-4" aria-hidden="true" />
-              <span className="hidden sm:inline">Send</span>
-            </button>
+            {isThinking ? (
+              <button
+                type="button"
+                onClick={handleStopResponse}
+                aria-label="Stop response"
+                className="min-h-[44px] px-4 py-2 rounded-xl bg-rose-500/20 border border-rose-400/50 text-rose-200 font-semibold text-sm hover:bg-rose-500/30 transition-colors flex items-center gap-1.5 shrink-0"
+              >
+                <X className="w-4 h-4" aria-hidden="true" />
+                <span>Stop</span>
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={!inputText.trim()}
+                aria-label="Send command"
+                className="min-h-[44px] px-4 py-2 rounded-xl bg-[#38BDF8] text-[#06080C] font-semibold text-sm hover:bg-[#7DD3FC] disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5 shrink-0"
+              >
+                <Send className="w-4 h-4" aria-hidden="true" />
+                <span className="hidden sm:inline">Send</span>
+              </button>
+            )}
           </form>
         </main>
 
-        {/* Right Rail (Tasks, Phone Controls, 2B Models, Permission Vault) */}
+        {/* Right Rail (Tasks, Phone Controls, Models, Permission Vault) */}
         <aside className="hidden lg:flex flex-col min-h-0 rounded-2xl bg-[#0B0F15]/85 backdrop-blur-xl border border-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] p-4 overflow-hidden">
           <MemoryAndPermissionsPanel
             tasks={tasks}
@@ -1504,6 +1603,8 @@ export default function App() {
             webSearchEnabled={webSearchEnabled}
             ensembleEnabled={ensembleEnabled}
             ensembleModelIds={ensembleModelIds}
+            voicePersona={voicePersona}
+            onChangeVoicePersona={setVoicePersona}
             onAddTask={(title, priority) => setTasks((prev) => addTaskItem(prev, title, priority))}
             onToggleTask={(id) => setTasks((prev) => toggleTaskItem(prev, id))}
             onClearCompleted={() => setTasks((prev) => clearCompletedTaskItems(prev))}
@@ -1570,7 +1671,7 @@ export default function App() {
                 payload: { appName: resolved.name, url: resolved.url },
               });
             }}
-            onSelectModel={(spec) => setSelectedModelId(spec.id)}
+            onSelectModel={handleSelectModel}
             onChangeOllamaUrl={setOllamaUrl}
             onToggleWebSearch={setWebSearchEnabled}
             onToggleEnsemble={setEnsembleEnabled}
@@ -1618,6 +1719,8 @@ export default function App() {
                 webSearchEnabled={webSearchEnabled}
                 ensembleEnabled={ensembleEnabled}
                 ensembleModelIds={ensembleModelIds}
+                voicePersona={voicePersona}
+                onChangeVoicePersona={setVoicePersona}
                 onAddTask={(title, priority) =>
                   setTasks((prev) => addTaskItem(prev, title, priority))
                 }
@@ -1690,7 +1793,10 @@ export default function App() {
                     payload: { appName: resolved.name, url: resolved.url },
                   });
                 }}
-                onSelectModel={(spec) => setSelectedModelId(spec.id)}
+                onSelectModel={(spec) => {
+                  handleSelectModel(spec);
+                  setMobileDrawerOpen(false);
+                }}
                 onChangeOllamaUrl={setOllamaUrl}
                 onToggleWebSearch={setWebSearchEnabled}
                 onToggleEnsemble={setEnsembleEnabled}
@@ -1709,7 +1815,7 @@ export default function App() {
           identity={identity}
           onSave={(next) => {
             setIdentity(next);
-            const confirmMsg = `Profile updated, ${next.addressAs}. I have registered your account name as ${next.fullName} and will address you as "${next.addressAs}".`;
+            const confirmMsg = `[${selectedModel.name} · ID: ${selectedModel.id}] Profile updated, ${next.addressAs}. I have registered your account name as ${next.fullName} and will address you as "${next.addressAs}".`;
             setMessages((prev) => [
               ...prev,
               {
@@ -1717,10 +1823,11 @@ export default function App() {
                 role: 'assistant',
                 text: confirmMsg,
                 timestamp: new Date().toISOString(),
-                source: 'offline-core',
+                source: selectedModel.id === 'offline-core' ? 'offline-core' : 'cloud-gemini',
+                modelLabel: selectedModel.name,
               },
             ]);
-            speakReply(confirmMsg);
+            speakReply(confirmMsg.replace(/^\[[^\]]+\]\s*/, ''));
           }}
           onClose={() => setProfileModalOpen(false)}
         />

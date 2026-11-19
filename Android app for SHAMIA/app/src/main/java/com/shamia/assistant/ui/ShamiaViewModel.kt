@@ -124,11 +124,57 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
         _ui.update { it.copy(statusBanner = null) }
     }
 
+    private var activeGenerationJob: kotlinx.coroutines.Job? = null
+
+    fun stopCurrentResponse() {
+        activeGenerationJob?.cancel()
+        activeGenerationJob = null
+        voiceEngine.stopSpeaking()
+        voiceEngine.stopListening()
+        val state = _ui.value
+        val addr = state.identity.addressAs.ifBlank { "Sir" }
+        _ui.update { it.copy(coreState = CoreVisualState.IDLE, liveTranscript = "") }
+        appendMessage(
+            HudMessage(
+                id = "stop-${System.currentTimeMillis()}",
+                isUser = false,
+                text = "[${state.selectedModel.name} · ID: ${state.selectedModel.id}] Response stopped immediately, $addr.",
+                timestampLabel = nowLabel(),
+                modelLabel = state.selectedModel.name
+            )
+        )
+    }
+
+    fun startNewChat() {
+        activeGenerationJob?.cancel()
+        activeGenerationJob = null
+        voiceEngine.stopSpeaking()
+        val state = _ui.value
+        val addr = state.identity.addressAs.ifBlank { "Sir" }
+        val activeSpec = state.selectedModel
+        _ui.update {
+            it.copy(
+                coreState = CoreVisualState.IDLE,
+                statusBanner = null,
+                messages = listOf(
+                    HudMessage(
+                        id = "welcome-${System.currentTimeMillis()}",
+                        isUser = false,
+                        text = "[${activeSpec.name} · ID: ${activeSpec.id}] Fresh conversation started, $addr. Answering strictly from ${activeSpec.name}.",
+                        timestampLabel = nowLabel(),
+                        modelLabel = activeSpec.name
+                    )
+                )
+            )
+        }
+    }
+
     fun sendMessage(rawText: String) {
         val text = rawText.trim()
         if (text.isEmpty()) return
         val state = _ui.value
         val addr = state.identity.addressAs.ifBlank { "Sir" }
+        val activeSpec = state.selectedModel
 
         appendMessage(
             HudMessage(
@@ -138,6 +184,22 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
                 timestampLabel = nowLabel()
             )
         )
+
+        val isModelQuery = Regex("\\b(which\\s+(?:ai\\s+)?model|what\\s+(?:ai\\s+)?model|model\\s+am\\s+i\\s+using|active\\s+model|current\\s+model)\\b", RegexOption.IGNORE_CASE).containsMatchIn(text)
+        if (isModelQuery) {
+            val reply = "[${activeSpec.name} · ID: ${activeSpec.id}] You are currently running on ${activeSpec.name} (Model ID: ${activeSpec.id}), $addr. All responses are generated strictly from ${activeSpec.name}."
+            appendMessage(
+                HudMessage(
+                    id = "a-${System.currentTimeMillis()}",
+                    isUser = false,
+                    text = reply,
+                    timestampLabel = nowLabel(),
+                    modelLabel = activeSpec.name
+                )
+            )
+            if (_ui.value.voiceReplyEnabled) voiceEngine.speak(reply)
+            return
+        }
 
         // 1. Check immediate local device/memory/diagnostics intents
         val local = IntentEngine.matchLocalIntent(
@@ -156,17 +218,17 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
             if (action != null) {
                 stageOrExecuteAction(action, local.replyText ?: "Ready, $addr.")
             } else {
-                val reply = local.replyText ?: "Done, $addr."
+                val reply = "[${activeSpec.name} · ID: ${activeSpec.id}] ${local.replyText ?: "Done, $addr."}"
                 appendMessage(
                     HudMessage(
                         id = "a-${System.currentTimeMillis()}",
                         isUser = false,
                         text = reply,
                         timestampLabel = nowLabel(),
-                        modelLabel = "DeepSeek 2B · Offline Core"
+                        modelLabel = activeSpec.name
                     )
                 )
-                if (_ui.value.voiceReplyEnabled) voiceEngine.speak(reply)
+                if (_ui.value.voiceReplyEnabled) voiceEngine.speak(local.replyText ?: "Done, $addr.")
             }
             return
         }
@@ -174,11 +236,10 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
         // 2. If user selected DeepSeek 2B Built-In Offline Core (without Ensemble) and no forced search
         val intent = IntentEngine.detectConversationalIntent(text)
         val shouldSearch = IntentEngine.shouldTriggerLiveSearch(text, state.useResearch)
-        val activeSpec = state.selectedModel
 
         if (activeSpec.isBuiltInOffline && !state.ensembleEnabled && !shouldSearch) {
             val (offlineReply, tip) = IntentEngine.generateOfflineCompanionReply(
-                text, addr, state.routine, state.syllabus
+                text, addr, state.routine, state.syllabus, activeSpec.id, activeSpec.name
             )
             appendMessage(
                 HudMessage(
@@ -195,9 +256,10 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
 
-        // 3. Paired Server Backend -> Local Termux/Ollama -> Direct Free Cloud Open-Weight + Live Google Search -> Offline DeepSeek 2B Fallback
+        // 3. Paired Server Backend -> Local Termux/Ollama -> Direct Free Cloud Open-Weight + Live Google Search -> Active Model Companion
         _ui.update { it.copy(coreState = CoreVisualState.THINKING) }
-        viewModelScope.launch {
+        activeGenerationJob?.cancel()
+        activeGenerationJob = viewModelScope.launch {
             var replyText = ""
             var links = emptyList<GroundingLink>()
             var usedModel = if (state.ensembleEnabled) "Ensemble" else activeSpec.name
@@ -263,9 +325,8 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
                     } else null
 
                     if (!localModelOut.isNullOrBlank()) {
-                        replyText = localModelOut
+                        replyText = "[${activeSpec.name} · ID: ${activeSpec.id}] $localModelOut"
                     } else {
-                        // Direct Free Cloud Open-Weight Inference from Android phone
                         val cloudOut = OpenSourceAiRepository.queryFreeCloudOpenWeight(
                             modelSpec = activeSpec,
                             prompt = text,
@@ -275,17 +336,17 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
                             webContext = webSummary
                         )
                         if (!cloudOut.isNullOrBlank()) {
-                            replyText = cloudOut
-                            usedModel = if (links.isNotEmpty()) "${activeSpec.name.substringBefore("·").trim()} + Google Search" else activeSpec.name
+                            replyText = "[${activeSpec.name} · ID: ${activeSpec.id}] ${cloudOut.replace(Regex("^\\[[^\\]]+\\]\\s*"), "")}"
+                            usedModel = activeSpec.name
                         } else if (webSummary.isNotBlank()) {
-                            replyText = "Live Google & open-web search results, $addr: $webSummary"
-                            usedModel = "${activeSpec.name.substringBefore("·").trim()} + Google Search"
+                            replyText = "[${activeSpec.name} · ID: ${activeSpec.id}] Clear summary for your query, $addr: $webSummary"
+                            usedModel = activeSpec.name
                         } else {
                             val (offlineFallback, _) = IntentEngine.generateOfflineCompanionReply(
-                                text, addr, state.routine, state.syllabus
+                                text, addr, state.routine, state.syllabus, activeSpec.id, activeSpec.name
                             )
                             replyText = offlineFallback
-                            usedModel = "DeepSeek 2B · Offline Core"
+                            usedModel = activeSpec.name
                         }
                     }
                 }
@@ -293,7 +354,7 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
 
             val (cleanText, extractedTip) = IntentEngine.extractCoachingTip(replyText)
             val fallbackTip = extractedTip ?: if (intent == ConversationalIntent.ENGLISH_TUTOR) {
-                IntentEngine.generateOfflineCompanionReply(text, addr, state.routine, state.syllabus).second
+                IntentEngine.generateOfflineCompanionReply(text, addr, state.routine, state.syllabus, activeSpec.id, activeSpec.name).second
             } else null
 
             _ui.update { it.copy(coreState = CoreVisualState.IDLE) }
@@ -309,7 +370,7 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
                     groundingLinks = links
                 )
             )
-            if (_ui.value.voiceReplyEnabled) voiceEngine.speak(cleanText)
+            if (_ui.value.voiceReplyEnabled) voiceEngine.speak(cleanText.replace(Regex("^\\[[^\\]]+\\]\\s*"), ""))
         }
     }
 
@@ -487,12 +548,28 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun selectModel(modelId: String) {
+        activeGenerationJob?.cancel()
+        activeGenerationJob = null
+        voiceEngine.stopSpeaking()
         store.saveSelectedModelId(modelId)
+        store.saveEnsembleEnabled(false)
         val spec = _ui.value.allModels.find { it.id == modelId }
+        val addr = _ui.value.identity.addressAs.ifBlank { "Sir" }
         _ui.update {
             it.copy(
                 selectedModelId = modelId,
-                statusBanner = if (spec != null) "Active Model: ${spec.name}" else null
+                ensembleEnabled = false,
+                coreState = CoreVisualState.IDLE,
+                statusBanner = if (spec != null) "Active Model: ${spec.name} (${spec.id})" else null,
+                messages = if (spec != null) {
+                    it.messages + HudMessage(
+                        id = "switch-${System.currentTimeMillis()}",
+                        isUser = false,
+                        text = "[${spec.name} · ID: ${spec.id}] Active model switched to ${spec.name}, $addr. All responses now come strictly from this model.",
+                        timestampLabel = nowLabel(),
+                        modelLabel = spec.name
+                    )
+                } else it.messages
             )
         }
     }
@@ -508,6 +585,16 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         val spec = _ui.value.allModels.find { it.id == modelId } ?: return
+        val deviceRam = _ui.value.hardware.ramGb
+        if (spec.minRamGb > deviceRam) {
+            _ui.update {
+                it.copy(
+                    statusBanner = "OOM Safety Guard: ${spec.name} requires ${spec.minRamGb}GB+ RAM for local install (detected ${deviceRam}GB). Use Cloud mode instead."
+                )
+            }
+            return
+        }
+
         viewModelScope.launch {
             _ui.update { it.copy(loadingProgress = it.loadingProgress + (modelId to 5)) }
             OpenSourceAiRepository.downloadAndPrepareModel(
@@ -544,6 +631,15 @@ class ShamiaViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         val vmSpec = OpenSourceAiRepository.VOICE_MODELS.find { it.id == voiceId } ?: return
+        val deviceRam = _ui.value.hardware.ramGb
+        if (vmSpec.minRamGb > deviceRam) {
+            _ui.update {
+                it.copy(
+                    statusBanner = "OOM Safety Guard: ${vmSpec.name} requires ${vmSpec.minRamGb}GB+ RAM (detected ${deviceRam}GB)."
+                )
+            }
+            return
+        }
         viewModelScope.launch {
             _ui.update { it.copy(loadingProgress = it.loadingProgress + (voiceId to 10)) }
             OpenSourceAiRepository.downloadAndPrepareModel(

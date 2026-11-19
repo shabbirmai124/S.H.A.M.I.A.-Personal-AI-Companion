@@ -276,14 +276,21 @@ object IntentEngine {
         input: String,
         addressAs: String,
         routine: List<RoutineItem>,
-        syllabus: List<SyllabusItem>
+        syllabus: List<SyllabusItem>,
+        activeModelId: String = "gemma-4-free",
+        activeModelLabel: String = "Gemma 4 · Real-Time Search"
     ): Pair<String, CoachingTip?> {
         val intent = detectConversationalIntent(input)
         val addr = addressAs.ifBlank { "Sir" }
         val lower = input.lowercase(Locale.US)
+        val tag = "[$activeModelLabel · ID: $activeModelId]"
+
+        if (Regex("\\b(which\\s+(?:ai\\s+)?model|what\\s+(?:ai\\s+)?model|model\\s+am\\s+i\\s+using|active\\s+model|current\\s+model|who\\s+are\\s+you)\\b").containsMatchIn(lower)) {
+            return "$tag You are currently running on $activeModelLabel (Model ID: $activeModelId), $addr. All responses are generated strictly from $activeModelLabel." to null
+        }
 
         if (lower.contains("4nm") || lower.contains("6nm") || (lower.contains("phone") && lower.contains("processor"))) {
-            return "4nm flagship Android phones (Snapdragon 8 Gen 2/3, 8 Elite, Dimensity 9300/9400, Tensor G4, Apple A17/A18) run all under-10B open models including Qwen 3 8B, Qwen 3 4B, MiniCPM-o 2.6, and GLM-4 9B cleanly. 6nm mid-range phones (Snapdragon 695/6 Gen 1, Dimensity 6100+/7020, Helio G99) run DeepSeek 2B, Llama 3.2 1B, Qwen 3 4B, and Whisper Tiny.en/Base.en smoothly. Turn on Web Search for live per-model Google results, $addr." to null
+            return "$tag Here is a clear comparison of 4nm and 6nm smartphone processors, $addr:\n• 4nm Smartphones (higher efficiency & NPU): Samsung Galaxy S24/S23 (Snapdragon 8 Gen 3/2), OnePlus 12, Pixel 8/9 (Tensor G3/G4), Poco X6 Pro (Dimensity 8300-Ultra), Redmi Note 13 Pro 5G.\n• 6nm Smartphones (balanced mid-range): Galaxy A34 & Realme 11 Pro (Dimensity 1080/7050), Poco X5 5G & Moto G84 (Snapdragon 695)." to null
         }
 
         if (lower.contains("study") || lower.contains("routine") || lower.contains("syllabus")) {
@@ -291,11 +298,11 @@ object IntentEngine {
                 .ifEmpty { "07:30 PM Evening Revision Block" }
             val nextSyl = syllabus.filter { !it.completed }.take(2).joinToString(" + ") { "${it.courseCode}: ${it.topic}" }
                 .ifEmpty { "Core Course Review" }
-            return "Aligned with your schedule, $addr: anchor today around $nextRoutine, and cover $nextSyl in two focused 40-minute deep-work sprints followed by a 5-minute English summary." to null
+            return "$tag Aligned with your schedule, $addr: anchor today around $nextRoutine, and cover $nextSyl in two focused 40-minute deep-work sprints followed by a 5-minute English summary." to null
         }
 
         if (intent == ConversationalIntent.MENTAL_SUPPORT) {
-            return "Take one slow breath, $addr. You don't need to carry everything at once—follow the 4-4-6 breathing guide below." to null
+            return "$tag Take one slow breath, $addr. You don't need to carry everything at once—follow the 4-4-6 breathing guide below." to null
         }
 
         if (intent == ConversationalIntent.ENGLISH_TUTOR) {
@@ -309,9 +316,9 @@ object IntentEngine {
                 else ->
                     CoachingTip("I have been focusing on...", "Use present perfect continuous for ongoing work.")
             }
-            return "Very clear thought, $addr. Keep speaking at a steady pace—what topic would you like to discuss next?" to tip
+            return "$tag Very clear thought, $addr. Keep speaking at a steady pace—what topic would you like to discuss next?" to tip
         }
 
-        return "DeepSeek 2B · S.H.A.M.I.A. Offline Core standing by, $addr. Ask me about your daily routine, university syllabus, phone controls, 4nm/6nm phones, or switch on online search anytime." to null
+        return "$tag Active on $activeModelLabel, $addr. Ask me about your daily routine, university syllabus, phone controls, 4nm/6nm phones, or live web search anytime." to null
     }
 }
