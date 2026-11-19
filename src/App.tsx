@@ -854,12 +854,11 @@ export default function App() {
         let groundingLinks: GroundingLink[] = [];
         let webSummary = '';
 
-        // Engine A: In-Browser WebGPU Open-Source Model (only if explicitly installed & loaded in browser memory)
+        // Engine A: In-Browser WebGPU Open-Source Model (when native ONNX pipeline is active in memory or device is offline)
         if (
           !ensembleEnabled &&
-          selectedModel.hfRepo &&
-          (selectedModel.runtime === 'webgpu' || !isOnline) &&
-          browserModelRunner.getLoadedModelId() === selectedModel.id
+          browserModelRunner.getLoadedModelId() === selectedModel.id &&
+          (browserModelRunner.hasNativePipeline() || !isOnline)
         ) {
           if (wantsSearch && webSearchEnabled && isOnline) {
             try {
@@ -872,7 +871,7 @@ export default function App() {
           }
           const rawReply = await browserModelRunner.generate(trimmed, identity, webSummary);
           if (requestId !== activeRequestIdRef.current) return;
-          const reply = `[${selectedModel.name} · ID: ${selectedModel.id}] ${rawReply.replace(/^\[[^\]]+\]\s*/, '')}`;
+          const reply = rawReply.replace(/^\[[^\]]+\]\s*/, '').trim();
           setMessages((prev) => [
             ...prev,
             {
@@ -925,7 +924,7 @@ export default function App() {
             history: messages.slice(-6).map((m) => ({ role: m.role, text: m.text })),
           });
           if (requestId !== activeRequestIdRef.current) return;
-          const reply = `[${selectedModel.name} · ID: ${selectedModel.id}] ${rawReply.replace(/^\[[^\]]+\]\s*/, '')}`;
+          const reply = rawReply.replace(/^\[[^\]]+\]\s*/, '').trim();
           setMessages((prev) => [
             ...prev,
             {
@@ -1009,8 +1008,7 @@ export default function App() {
 
               const confirmedLabel = data.modelLabel || selectedModel.name;
               const finalReply =
-                data.replyText ||
-                `[${confirmedLabel} · ID: ${selectedModel.id}] How can I help further, ${addr}?`;
+                data.replyText || `How can I help further, ${addr}?`;
 
               setMessages((prev) => [
                 ...prev,
@@ -1476,7 +1474,7 @@ export default function App() {
             {isThinking && (
               <div className="py-3 px-3.5 my-2 rounded-xl bg-[#0D131C] border border-[#38BDF8]/25 text-xs text-[#7DD3FC] flex items-center justify-between gap-3">
                 <span>
-                  {SYSTEM_NAME} ({selectedModel.name}) is generating response, {addr}...
+                  {SYSTEM_NAME} is generating response, {addr}...
                 </span>
                 <button
                   type="button"

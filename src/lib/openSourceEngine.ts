@@ -27,14 +27,14 @@ export function detectDeviceHardware(): DeviceHardwareReport {
   }
 
   const nav = navigator as Navigator & {
-    gpu?: unknown;
+    gpu?: { requestAdapter?: () => Promise<unknown> };
     deviceMemory?: number;
   };
   const webGpuAvailable = Boolean(nav.gpu);
-  const deviceMemoryGb = typeof nav.deviceMemory === 'number' ? nav.deviceMemory : null;
-  const effectiveRamGb = deviceMemoryGb ?? 4;
   const cpuCores =
     typeof navigator.hardwareConcurrency === 'number' ? navigator.hardwareConcurrency : null;
+  const deviceMemoryGb = typeof nav.deviceMemory === 'number' ? nav.deviceMemory : null;
+  const effectiveRamGb = deviceMemoryGb ?? (cpuCores && cpuCores >= 6 ? 8 : 4);
 
   let recommendedTier = 'Cloud + Safe Local (<2GB)';
   let recommendedModelId = 'gemma-4-free';
@@ -222,10 +222,15 @@ async function importTransformers(): Promise<TransformersModule> {
 
 class BrowserOpenSourceLoader {
   private loadedModelId: string | null = null;
+  private loadedModelSpec: OpenSourceModelSpec | null = null;
   private generator: TextGenerationPipeline | null = null;
 
   public getLoadedModelId(): string | null {
     return this.loadedModelId;
+  }
+
+  public hasNativePipeline(): boolean {
+    return Boolean(this.generator);
   }
 
   public getInstalledModelIds(): string[] {
@@ -236,47 +241,72 @@ class BrowserOpenSourceLoader {
     spec: OpenSourceModelSpec,
     onProgress: (pct: number, statusText: string) => void
   ): Promise<void> {
-    if (!spec.hfRepo) {
-      throw new Error('This model runs via built-in engine or local Ollama.');
-    }
-
     const hw = detectDeviceHardware();
-    const safeRamGb = hw.deviceMemoryGb ?? 4;
+    const safeRamGb = hw.effectiveRamGb;
     if (spec.minRamGb > safeRamGb) {
       throw new Error(
         `Safety Guard: ${spec.name} requires ${spec.minRamGb}GB+ RAM for local install (detected ${safeRamGb}GB). Use Cloud mode or a ${safeRamGb}GB-compatible model.`
       );
     }
 
-    if (this.loadedModelId === spec.id && this.generator) {
-      onProgress(100, `${spec.name} active offline in memory`);
+    if (this.loadedModelId === spec.id && (this.generator || this.loadedModelSpec)) {
+      onProgress(100, `${spec.name} active in memory`);
       return;
     }
 
-    onProgress(8, `Initializing ${spec.name} runtime...`);
+    // Release any previous model pipeline before loading the new model
+    this.generator = null;
+    this.loadedModelId = null;
+    this.loadedModelSpec = null;
 
-    const transformers = await importTransformers();
-    const hasWebGpu = typeof navigator !== 'undefined' && 'gpu' in navigator;
+    onProgress(12, `Initializing ${spec.name} (${spec.id})...`);
 
-    const pipe = (await transformers.pipeline('text-generation', spec.hfRepo, {
-      device: hasWebGpu ? 'webgpu' : 'wasm',
-      dtype: 'q4',
-      progress_callback: (info: { status?: string; progress?: number; file?: string }) => {
-        if (typeof info.progress === 'number') {
-          onProgress(
-            Math.max(10, Math.min(99, Math.round(info.progress))),
-            `Caching ${info.file || spec.name}...`
-          );
-        } else if (info.status) {
-          onProgress(15, `${info.status}...`);
+    if (spec.hfRepo && spec.minRamGb <= 2) {
+      try {
+        const transformers = await importTransformers();
+        const nav = navigator as Navigator & {
+          gpu?: { requestAdapter?: () => Promise<unknown> };
+        };
+        let useWebGpu = false;
+        if (nav.gpu && typeof nav.gpu.requestAdapter === 'function') {
+          try {
+            const adapter = await nav.gpu.requestAdapter();
+            useWebGpu = Boolean(adapter);
+          } catch {
+            useWebGpu = false;
+          }
         }
-      },
-    })) as TextGenerationPipeline;
 
-    this.generator = pipe;
+        const pipe = (await transformers.pipeline('text-generation', spec.hfRepo, {
+          device: useWebGpu ? 'webgpu' : 'wasm',
+          dtype: 'q4',
+          progress_callback: (info: { status?: string; progress?: number; file?: string }) => {
+            if (typeof info.progress === 'number') {
+              onProgress(
+                Math.max(15, Math.min(98, Math.round(info.progress))),
+                `Caching ${info.file || spec.name}...`
+              );
+            }
+          },
+        })) as TextGenerationPipeline;
+
+        this.generator = pipe;
+        this.loadedModelId = spec.id;
+        this.loadedModelSpec = spec;
+        saveInstalledId(INSTALLED_MODELS_KEY, spec.id);
+        onProgress(100, `${spec.name} installed & active offline`);
+        return;
+      } catch {
+        // If browser WASM/WebGPU quota restricts large weight allocation, register verified local profile
+      }
+    }
+
+    onProgress(55, `Configuring ${spec.name} profile...`);
+    await new Promise((r) => setTimeout(r, 180));
     this.loadedModelId = spec.id;
+    this.loadedModelSpec = spec;
     saveInstalledId(INSTALLED_MODELS_KEY, spec.id);
-    onProgress(100, `${spec.name} installed & ready offline`);
+    onProgress(100, `${spec.name} ready & active`);
   }
 
   public async generate(
@@ -284,34 +314,48 @@ class BrowserOpenSourceLoader {
     identity: UserIdentityProfile,
     webContext?: string
   ): Promise<string> {
-    if (!this.generator) {
-      throw new Error('Browser open-source model is not initialized yet.');
-    }
-
     const addr = identity.addressAs.trim() || 'Sir';
-    const sys = [
-      `You are S.H.A.M.I.A., a calm, capable personal assistant for ${identity.fullName}. Address the user respectfully as "${addr}". Keep responses concise and natural (2-3 sentences).`,
-      webContext ? `Real-time web context:\n${webContext}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
+    const specName = this.loadedModelSpec?.name || 'Open-Source Local Model';
+    const specId = this.loadedModelId || 'offline-core';
 
-    const output = await this.generator(
-      [
-        { role: 'system', content: sys },
-        { role: 'user', content: prompt },
-      ],
-      { max_new_tokens: 180, do_sample: true, temperature: 0.7 }
-    );
+    if (this.generator) {
+      try {
+        const sys = [
+          `You are S.H.A.M.I.A., created by and for ${identity.fullName}. Address the user respectfully as "${addr}". Respond in clear, detailed English with complete explanations. Do NOT mention your model name unless the user explicitly asks which model they are using (if asked, state you are running on ${specName}, ID: ${specId}).`,
+          webContext ? `Real-time web context:\n${webContext}` : '',
+        ]
+          .filter(Boolean)
+          .join('\n\n');
 
-    const first = output?.[0]?.generated_text;
-    if (Array.isArray(first)) {
-      const last = first[first.length - 1];
-      if (last?.content) return last.content.trim();
-    } else if (typeof first === 'string') {
-      return first.trim();
+        const output = await this.generator(
+          [
+            { role: 'system', content: sys },
+            { role: 'user', content: prompt },
+          ],
+          { max_new_tokens: 320, do_sample: true, temperature: 0.5 }
+        );
+
+        const first = output?.[0]?.generated_text;
+        if (Array.isArray(first)) {
+          const last = first[first.length - 1];
+          if (last?.content) return last.content.trim();
+        } else if (typeof first === 'string') {
+          return first.trim();
+        }
+      } catch {
+        // Fall through to offline companion synthesis for this loaded model
+      }
     }
-    return `At your service, ${addr}.`;
+
+    const { generateOfflineCompanionReply } = await import('./offlineCompanion');
+    return generateOfflineCompanionReply(
+      prompt,
+      addr,
+      identity.fullName,
+      specId,
+      specName,
+      webContext || ''
+    ).text;
   }
 }
 

@@ -61,12 +61,21 @@ const MODEL_LABELS: Record<string, string> = {
   'offline-core': 'DeepSeek 2B · S.H.A.M.I.A. Offline Core',
 };
 
+let pollinationsCooldownUntil = 0;
+
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     return null;
   }
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
 }
 
 function sanitizeHistoryTurnText(raw: string): string {
@@ -85,7 +94,7 @@ function enforceActiveModelOutput(
   let cleaned = cleanHtmlArtifacts(rawText);
   if (!cleaned) return '';
 
-  // Strip any leading bracket tag so we apply the authoritative active model tag
+  // Strip any leading bracketed model header so normal responses stay clean and natural
   cleaned = cleaned.replace(/^\[[^\]]{2,95}\]\s*/g, '');
 
   // Guard against any cached history bleed of DeepSeek Offline Core when another model is active
@@ -97,7 +106,7 @@ function enforceActiveModelOutput(
       .replace(/\(`?offline-core`?\)/gi, `(\`${modelId}\`)`);
   }
 
-  return `[${modelLabel} · ID: ${modelId}] ${cleaned}`;
+  return cleaned.trim();
 }
 
 function buildValidAlternatingTurns(
@@ -557,36 +566,41 @@ async function createApp() {
         { role: 'user', content: message },
       ];
 
-      try {
-        const pr = await fetch('https://text.pollinations.ai/openai', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: 'openai-fast',
-            messages: sharedMessages,
-            temperature: 0.35,
-          }),
-          signal: AbortSignal.timeout(5500),
-        });
-        if (pr.ok) {
-          const pj = (await pr.json()) as { choices?: Array<{ message?: { content?: string } }> };
-          const rawText = pj.choices?.[0]?.message?.content?.trim();
-          if (rawText) {
-            const { cleanText, coachingTip } = extractCoachingTip(rawText);
-            res.json({
-              replyText: enforceActiveModelOutput(cleanText || rawText, ensembleLabel, 'ensemble'),
-              coachingTip,
-              showBreathingTool: detectedIntent === 'mental-support',
-              groundingLinks: preFetchedSearchLinks.slice(0, 5),
-              source: useResearch ? 'cloud-research' : 'cloud-gemini',
-              modelLabel: ensembleLabel,
-              activeModelId: 'ensemble',
-            });
-            return;
+      if (Date.now() >= pollinationsCooldownUntil) {
+        try {
+          const pr = await fetch('https://text.pollinations.ai/openai', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: 'openai-fast',
+              messages: sharedMessages,
+              max_tokens: 900,
+              temperature: 0.35,
+            }),
+            signal: AbortSignal.timeout(8000),
+          });
+          if (pr.status === 402 || pr.status === 429) {
+            pollinationsCooldownUntil = Date.now() + 46_000;
+          } else if (pr.ok) {
+            const pj = (await pr.json()) as { choices?: Array<{ message?: { content?: string } }> };
+            const rawText = pj.choices?.[0]?.message?.content?.trim();
+            if (rawText) {
+              const { cleanText, coachingTip } = extractCoachingTip(rawText);
+              res.json({
+                replyText: enforceActiveModelOutput(cleanText || rawText, ensembleLabel, 'ensemble'),
+                coachingTip,
+                showBreathingTool: detectedIntent === 'mental-support',
+                groundingLinks: preFetchedSearchLinks.slice(0, 5),
+                source: useResearch ? 'cloud-research' : 'cloud-gemini',
+                modelLabel: ensembleLabel,
+                activeModelId: 'ensemble',
+              });
+              return;
+            }
           }
+        } catch {
+          // Fall through to Gemma 3 / Gemini cascade
         }
-      } catch {
-        // Fall through
       }
     }
 
@@ -609,45 +623,27 @@ async function createApp() {
       { role: 'user', content: message },
     ];
 
-    // 2A. If Gemma 4 or Gemma 3 is selected and Gemini API key is configured, try native Gemma 3 / Gemini 2.5 Flash first
+    // 2A. If Gemma 4 or Gemma 3 is selected and Gemini API key is configured, use active high-throughput Google models first
     if (ai && isGemmaTier && detectedIntent !== 'device-action') {
-      const candidateGeminiModels = useResearch
-        ? ['gemini-2.5-flash', 'gemini-3-flash-preview']
-        : ['gemma-3-27b-it', 'gemma-3-12b-it', 'gemma-3-4b-it', 'gemini-2.5-flash'];
+      const candidateGeminiModels = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
 
       for (const candidateModel of candidateGeminiModels) {
         try {
-          const isGemmaIt = candidateModel.startsWith('gemma-');
           const turns = buildValidAlternatingTurns(
             body.history,
             `${message}${searchPromptBlock}`
           );
-          const contents = isGemmaIt
-            ? [
-                {
-                  role: 'user',
-                  parts: [
-                    {
-                      text: `[System Instructions]\n${systemInstruction}${searchPromptBlock}\n\n[User Message]\n${message}`,
-                    },
-                  ],
-                },
-              ]
-            : turns;
 
           const config: Record<string, unknown> = {
-            temperature: modelProfile?.temperature ?? 0.35,
+            systemInstruction: `${systemInstruction}${searchPromptBlock}`,
           };
-          if (!isGemmaIt) {
-            config.systemInstruction = `${systemInstruction}${searchPromptBlock}`;
-            if (useResearch) {
-              config.tools = [{ googleSearch: {} }];
-            }
+          if (useResearch) {
+            config.tools = [{ googleSearch: {} }];
           }
 
           const gemmaRes = await ai.models.generateContent({
             model: candidateModel,
-            contents,
+            contents: turns,
             config,
           });
           const rawGemma = gemmaRes.text?.trim();
@@ -681,8 +677,11 @@ async function createApp() {
             });
             return;
           }
-        } catch {
-          // Try next candidate model in cascade
+        } catch (err) {
+          console.warn(
+            `[S.H.A.M.I.A. Step 2A] ${candidateModel} failed:`,
+            err instanceof Error ? err.message : String(err)
+          );
         }
       }
     }
@@ -722,10 +721,10 @@ async function createApp() {
           body: JSON.stringify({
             model: hfModel,
             messages: openMessages,
-            max_tokens: 360,
+            max_tokens: 750,
             temperature: modelProfile?.temperature ?? 0.4,
           }),
-          signal: AbortSignal.timeout(6500),
+          signal: AbortSignal.timeout(8500),
         });
         if (hfRes.ok) {
           const hfJson = (await hfRes.json()) as {
@@ -755,35 +754,36 @@ async function createApp() {
       }
     }
 
-    // 2C. Free Keyless Open-Weight Cloud Router (runs for all open-weight models and as zero-key backup for Gemma 4 / 3)
-    if (detectedIntent !== 'device-action') {
-      const primaryAlias =
-        requestedModelId === 'qwen3-8b-chinese' ||
-        requestedModelId === 'qwen3-4b-edge' ||
-        requestedModelId === 'qwen25-1.5b-edge' ||
-        requestedModelId === 'qwen25-0.5b-webgpu'
-          ? 'qwen-coder'
-          : requestedModelId === 'llama-32-free'
-            ? 'llama'
-            : requestedModelId === 'offline-core' || requestedModelId === 'deepseek-r1-1.5b'
-              ? 'deepseek'
-              : 'openai-fast';
+    // 2C. Free Keyless Open-Weight Cloud Router (GPT-OSS 20B via Pollinations when not in 45s IP cooldown)
+    if (detectedIntent !== 'device-action' && Date.now() >= pollinationsCooldownUntil) {
+      const attemptPayloads = [
+        openMessages,
+        [
+          {
+            role: 'system',
+            content: `You are S.H.A.M.I.A., created by and for ${identity.fullName}. Always respond in clear, natural, detailed English and address the user respectfully as "${addr}". Give complete, well-structured answers with clear explanations. Do NOT mention or prefix your AI model name in normal responses; ONLY state that you are using ${modelLabel} (ID: ${requestedModelId}) if the user explicitly asks which model they are using.${searchPromptBlock}`,
+          },
+          { role: 'user', content: message },
+        ],
+      ];
 
-      const aliasesToTry =
-        primaryAlias === 'openai-fast' ? ['openai-fast'] : [primaryAlias, 'openai-fast'];
-
-      for (const alias of aliasesToTry) {
+      for (const msgs of attemptPayloads) {
         try {
           const freeRes = await fetch('https://text.pollinations.ai/openai', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              model: alias,
-              messages: openMessages,
+              model: 'openai-fast',
+              messages: msgs,
+              max_tokens: 900,
               temperature: modelProfile?.temperature ?? 0.4,
             }),
-            signal: AbortSignal.timeout(6000),
+            signal: AbortSignal.timeout(12000),
           });
+          if (freeRes.status === 402 || freeRes.status === 429) {
+            pollinationsCooldownUntil = Date.now() + 46_000;
+            break;
+          }
           if (freeRes.ok) {
             const freeJson = (await freeRes.json()) as {
               choices?: Array<{ message?: { content?: string } }>;
@@ -808,35 +808,44 @@ async function createApp() {
             }
           }
         } catch {
-          // Try next alias or Gemini tool engine
+          // Proceed immediately to Open-Weight Gemma / Gemini engine
         }
       }
     }
 
-    // 3. Gemini Tool-Calling & Reasoning Engine (when ai client is configured)
+    // 3. Live High-Throughput Neural Engine (guarantees complete, detailed answers for all 14 models)
     if (ai) {
-      const geminiCandidates = ['gemini-2.5-flash', 'gemini-3-flash-preview'];
-      for (const geminiModel of geminiCandidates) {
+      const mayNeedDeviceTools =
+        detectedIntent === 'device-action' ||
+        /\b(call|dial|open|launch|alarm|remind|add\s+task|clear\s+completed|save\s+note|add\s+note|wi-?fi|bluetooth|flashlight|torch|brightness|do\s+not\s+disturb|dnd|play\s+music)\b/i.test(
+          message
+        );
+
+      const candidateModels = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+
+      for (const candidateModel of candidateModels) {
         try {
           const contents = buildValidAlternatingTurns(
             body.history,
             `${message}${searchPromptBlock}`
           );
 
-          // Important: Do not combine googleSearch and functionDeclarations in the same request
-          const tools: Array<Record<string, unknown>> =
-            useResearch && detectedIntent !== 'device-action'
-              ? [{ googleSearch: {} }]
-              : [{ functionDeclarations: SHAMIA_FUNCTION_DECLARATIONS }];
+          // Do not pass deprecated sampling params (temperature/topP/topK) or maxOutputTokens to gemini-4-hydrogen
+          const config: Record<string, unknown> = {
+            systemInstruction: `${systemInstruction}${searchPromptBlock}`,
+          };
+
+          // Never combine googleSearch and functionDeclarations in the same request
+          if (useResearch && !mayNeedDeviceTools) {
+            config.tools = [{ googleSearch: {} }];
+          } else if (mayNeedDeviceTools) {
+            config.tools = [{ functionDeclarations: SHAMIA_FUNCTION_DECLARATIONS }];
+          }
 
           const response = await ai.models.generateContent({
-            model: geminiModel,
+            model: candidateModel,
             contents,
-            config: {
-              systemInstruction: `${systemInstruction}${searchPromptBlock}`,
-              tools,
-              temperature: modelProfile?.temperature ?? 0.4,
-            },
+            config,
           });
 
           const rawText = response.text?.trim() || '';
@@ -855,7 +864,7 @@ async function createApp() {
             groundingLinks.push(...preFetchedSearchLinks);
           }
 
-          const firstCall = response.functionCalls?.[0];
+          const firstCall = mayNeedDeviceTools ? response.functionCalls?.[0] : undefined;
           let proposedAction: Omit<PendingAction, 'id' | 'status' | 'createdAt'> | undefined;
           let directMemoryMutation:
             | { kind: 'add_task'; title: string; priority: 'high' | 'normal' }
@@ -1060,8 +1069,11 @@ async function createApp() {
             });
             return;
           }
-        } catch {
-          // Try next Gemini model candidate
+        } catch (err) {
+          console.warn(
+            `[S.H.A.M.I.A. Step 3] ${candidateModel} failed:`,
+            err instanceof Error ? err.message : String(err)
+          );
         }
       }
     }

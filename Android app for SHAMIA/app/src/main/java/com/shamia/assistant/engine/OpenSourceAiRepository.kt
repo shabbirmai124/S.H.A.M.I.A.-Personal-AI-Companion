@@ -342,12 +342,12 @@ object OpenSourceAiRepository {
         val routineTxt = routine.filter { !it.completed }.joinToString("; ") { "${it.timeLabel}: ${it.title}" }
         val syllabusTxt = syllabus.filter { !it.completed }.joinToString("; ") { "${it.courseCode} ${it.courseTitle} (${it.topic})" }
         val systemPrompt = buildString {
-            append("You are S.H.A.M.I.A. (Smart Human-aligned Assistant & Mindful Interactive Aid), created for Md Shabbir Mia. ")
-            append("Always address the user respectfully as \"$addressAs\". ")
-            append("Active Open-Weight Tier: ${modelSpec.name} (${modelSpec.params}). ")
+            append("You are S.H.A.M.I.A. (Smart Human-aligned Assistant & Mindful Interactive Aid), created by and for Md Shabbir Mia. ")
+            append("Always respond in clear, natural English and address the user respectfully as \"$addressAs\". ")
+            append("Do NOT mention or prefix your AI model name in normal responses; ONLY state that you are running on ${modelSpec.name} (ID: ${modelSpec.id}, ${modelSpec.params}) when the user explicitly asks which model they are using. ")
             if (routineTxt.isNotEmpty()) append("Daily Routine: $routineTxt. ")
             if (syllabusTxt.isNotEmpty()) append("University Syllabus: $syllabusTxt. ")
-            append("Keep responses concise (2 to 4 sentences), warm, and practical. ")
+            append("Provide complete, detailed, and well-structured answers with clear explanations so the response is never cut short. ")
             append("If the user's English sentence has a clear grammar mistake, append [ENG_TIP: <natural phrasing> | <1-line reason>] at the very end.")
         }
         val userPrompt = if (webContext.isNotBlank()) {

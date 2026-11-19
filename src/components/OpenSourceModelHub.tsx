@@ -40,8 +40,8 @@ export function OpenSourceModelHub({
   onToggleEnsembleModel,
 }: OpenSourceModelHubProps) {
   const hardware = useMemo(() => detectDeviceHardware(), []);
-  const safeRamGb = hardware.deviceMemoryGb ?? 4;
-  const [showAllCloudModels, setShowAllCloudModels] = useState(false);
+  const safeRamGb = hardware.effectiveRamGb;
+  const [showAllCloudModels, setShowAllCloudModels] = useState(true);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [loadedBrowserId, setLoadedBrowserId] = useState<string | null>(() =>
@@ -78,9 +78,7 @@ export function OpenSourceModelHub({
       return aSafe - bSafe;
     });
     if (showAllCloudModels) return sorted;
-    return sorted.filter(
-      (m) => m.minRamGb <= safeRamGb || m.id === selectedModelId || m.freeOnlineAvailable
-    );
+    return sorted.filter((m) => m.minRamGb <= safeRamGb || m.id === selectedModelId);
   }, [allModels, safeRamGb, selectedModelId, showAllCloudModels]);
 
   const handleLoadWebGpuModel = async (spec: OpenSourceModelSpec) => {

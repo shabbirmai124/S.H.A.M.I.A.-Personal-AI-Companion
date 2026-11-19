@@ -283,14 +283,17 @@ object IntentEngine {
         val intent = detectConversationalIntent(input)
         val addr = addressAs.ifBlank { "Sir" }
         val lower = input.lowercase(Locale.US)
-        val tag = "[$activeModelLabel · ID: $activeModelId]"
 
-        if (Regex("\\b(which\\s+(?:ai\\s+)?model|what\\s+(?:ai\\s+)?model|model\\s+am\\s+i\\s+using|active\\s+model|current\\s+model|who\\s+are\\s+you)\\b").containsMatchIn(lower)) {
-            return "$tag You are currently running on $activeModelLabel (Model ID: $activeModelId), $addr. All responses are generated strictly from $activeModelLabel." to null
+        if (Regex("\\b(which\\s+(?:ai\\s+)?model|what\\s+(?:ai\\s+)?model|model\\s+am\\s+i\\s+using|model\\s+are\\s+you|active\\s+model|current\\s+model|running\\s+on\\s+right\\s+now)\\b").containsMatchIn(lower)) {
+            return "You are currently using $activeModelLabel (Model ID: $activeModelId), $addr. All responses are generated strictly from $activeModelLabel." to null
+        }
+
+        if (Regex("\\b(who\\s+are\\s+you|your\\s+name|what\\s+is\\s+shamia)\\b").containsMatchIn(lower)) {
+            return "I am S.H.A.M.I.A. (Smart Human-aligned Assistant & Mindful Interactive Aid), created by and for Md Shabbir Mia, $addr. I am your voice companion, real-time English coach, routine & syllabus planner, and permission-guarded phone assistant." to null
         }
 
         if (lower.contains("4nm") || lower.contains("6nm") || (lower.contains("phone") && lower.contains("processor"))) {
-            return "$tag Here is a clear comparison of 4nm and 6nm smartphone processors, $addr:\n• 4nm Smartphones (higher efficiency & NPU): Samsung Galaxy S24/S23 (Snapdragon 8 Gen 3/2), OnePlus 12, Pixel 8/9 (Tensor G3/G4), Poco X6 Pro (Dimensity 8300-Ultra), Redmi Note 13 Pro 5G.\n• 6nm Smartphones (balanced mid-range): Galaxy A34 & Realme 11 Pro (Dimensity 1080/7050), Poco X5 5G & Moto G84 (Snapdragon 695)." to null
+            return "Here is a detailed comparison of 4nm and 6nm smartphone processors, $addr:\n• 4nm Smartphones (higher efficiency & NPU throughput for under-10B open-weight AI models): Samsung Galaxy S24/S23 (Snapdragon 8 Gen 3/2), OnePlus 12, Pixel 8/9 (Tensor G3/G4), Poco X6 Pro (Dimensity 8300-Ultra), Redmi Note 13 Pro 5G.\n• 6nm Smartphones (balanced mid-range thermal stability for 0.5B–4B open-weight models): Galaxy A34 & Realme 11 Pro (Dimensity 1080/7050), Poco X5 5G & Moto G84 (Snapdragon 695)." to null
         }
 
         if (lower.contains("study") || lower.contains("routine") || lower.contains("syllabus")) {
@@ -298,11 +301,11 @@ object IntentEngine {
                 .ifEmpty { "07:30 PM Evening Revision Block" }
             val nextSyl = syllabus.filter { !it.completed }.take(2).joinToString(" + ") { "${it.courseCode}: ${it.topic}" }
                 .ifEmpty { "Core Course Review" }
-            return "$tag Aligned with your schedule, $addr: anchor today around $nextRoutine, and cover $nextSyl in two focused 40-minute deep-work sprints followed by a 5-minute English summary." to null
+            return "Aligned with your schedule, $addr: anchor today around $nextRoutine, and cover $nextSyl in two focused 45-minute deep-work sprints followed by a 10-minute active-recall summary and 5-minute spoken English review." to null
         }
 
         if (intent == ConversationalIntent.MENTAL_SUPPORT) {
-            return "$tag Take one slow breath, $addr. You don't need to carry everything at once—follow the 4-4-6 breathing guide below." to null
+            return "Take one slow breath, $addr. You don't need to carry everything at once—follow the 4-4-6 breathing guide below and we will tackle the next step calmly together." to null
         }
 
         if (intent == ConversationalIntent.ENGLISH_TUTOR) {
@@ -316,9 +319,9 @@ object IntentEngine {
                 else ->
                     CoachingTip("I have been focusing on...", "Use present perfect continuous for ongoing work.")
             }
-            return "$tag Very clear thought, $addr. Keep speaking at a steady pace—what topic would you like to discuss next?" to tip
+            return "Very clear thought, $addr. Keep speaking at a steady, natural pace—what topic would you like to discuss in detail next?" to tip
         }
 
-        return "$tag Active on $activeModelLabel, $addr. Ask me about your daily routine, university syllabus, phone controls, 4nm/6nm phones, or live web search anytime." to null
+        return "At your service, $addr. Ask me about your daily routine, university syllabus, computer science topics, phone controls, 4nm/6nm phones, or live web search anytime and I will provide a complete, detailed answer." to null
     }
 }

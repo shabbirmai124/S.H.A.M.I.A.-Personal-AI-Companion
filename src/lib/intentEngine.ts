@@ -151,7 +151,10 @@ export function shouldTriggerLiveSearch(input: string, forceWebSearch?: boolean)
   if (forceWebSearch) return true;
   const trimmed = input.trim();
   if (!trimmed) return false;
-  return /\b(search|research|look up|google|latest|news|who won|what happened|current price|weather|real-?time|4nm|6nm|3nm|processor|chipset|snapdragon|dimensity|exynos|tensor|bionic|which phones?|what phones?|smartphones?|compare|specs|specification|benchmark|today|2025|2026)\b/i.test(
+  if (/\b(binary\s+search|depth[-\s]first\s+search|breadth[-\s]first\s+search|linear\s+search|tree\s+search|graph\s+search|a\*\s+search)\b/i.test(trimmed)) {
+    return false;
+  }
+  return /\b(search\s+(?:for|the\s+web|online|google|about)|web\s+search|google|look\s+up|latest\s+news|breaking\s+news|who\s+won|what\s+happened\s+today|current\s+price|weather|real-?time|4\s*nm|6\s*nm|3\s*nm|processor|chipset|snapdragon|dimensity|exynos|tensor|bionic|which\s+phones?|what\s+phones?|2025|2026)\b/i.test(
     trimmed
   );
 }

@@ -34,6 +34,70 @@ const SOURCE_TEXT: Record<NonNullable<HudMessage['source']>, string> = {
   'permission-gate': 'Permission Vault',
 };
 
+function renderInlineTokens(text: string) {
+  const tokens = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  return tokens.map((tok, idx) => {
+    if (tok.startsWith('**') && tok.endsWith('**') && tok.length > 4) {
+      return (
+        <strong key={idx} className="font-semibold text-[#F8FAFC]">
+          {tok.slice(2, -2)}
+        </strong>
+      );
+    }
+    if (tok.startsWith('`') && tok.endsWith('`') && tok.length > 2) {
+      return (
+        <code
+          key={idx}
+          className="px-1.5 py-0.5 rounded bg-white/[0.08] text-[#7DD3FC] font-mono text-[13px]"
+        >
+          {tok.slice(1, -1)}
+        </code>
+      );
+    }
+    return <span key={idx}>{tok}</span>;
+  });
+}
+
+function renderFormattedText(text: string) {
+  const lines = text.split('\n');
+  return lines.map((line, lineIdx) => {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return <span key={lineIdx} className="block h-1.5" />;
+    }
+    if (/^-{3,}$/.test(trimmed)) {
+      return <hr key={lineIdx} className="my-2 border-white/[0.08]" />;
+    }
+    const headingMatch = trimmed.match(/^#{1,4}\s+(.*)$/);
+    if (headingMatch) {
+      return (
+        <span
+          key={lineIdx}
+          className="block font-semibold text-[#7DD3FC] text-[15px] pt-1.5"
+        >
+          {renderInlineTokens(headingMatch[1])}
+        </span>
+      );
+    }
+    const bulletMatch = trimmed.match(/^(?:\*|-|•)\s+(.*)$/);
+    if (bulletMatch) {
+      return (
+        <span key={lineIdx} className="flex items-start gap-2 pl-1">
+          <span className="text-[#38BDF8] select-none shrink-0" aria-hidden="true">
+            •
+          </span>
+          <span className="min-w-0 flex-1">{renderInlineTokens(bulletMatch[1])}</span>
+        </span>
+      );
+    }
+    return (
+      <span key={lineIdx} className="block">
+        {renderInlineTokens(line)}
+      </span>
+    );
+  });
+}
+
 export function HudMessageCard({
   message,
   userLabel,
@@ -64,10 +128,10 @@ export function HudMessageCard({
         </span>
         <span aria-hidden="true">·</span>
         <time className="font-mono-tabular">{timeFormatted}</time>
-        {!isUser && (message.modelLabel || message.source) && (
+        {!isUser && message.source === 'cloud-research' && (
           <>
             <span aria-hidden="true">·</span>
-            <span>{message.modelLabel || SOURCE_TEXT[message.source!]}</span>
+            <span>{SOURCE_TEXT['cloud-research']}</span>
           </>
         )}
         {!isUser && onSpeakMessage && (
@@ -90,7 +154,7 @@ export function HudMessageCard({
             : 'bg-[#0B0F15]/90 text-[#E8EEF3] border border-white/[0.07]'
         }`}
       >
-        <p className="whitespace-pre-wrap">{message.text}</p>
+        <div className="space-y-1 break-words">{renderFormattedText(message.text)}</div>
 
         {/* Inline English Fluency Tip */}
         {message.coachingTip &&

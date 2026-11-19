@@ -85,7 +85,7 @@ test('detectConversationalIntent routes English tutor and mental support seamles
   );
 });
 
-test('offlineCompanion provides real-time English grammar tips and breathing support offline', () => {
+test('offlineCompanion provides real-time English grammar tips and breathing support offline without mentioning model name on normal queries', () => {
   const eng = generateOfflineCompanionReply(
     'Yesterday I am going to office and discuss about plan',
     'Sir',
@@ -95,7 +95,7 @@ test('offlineCompanion provides real-time English grammar tips and breathing sup
   );
   assert.equal(eng.intent, 'english-tutor');
   assert.ok(eng.text.includes('Sir'));
-  assert.ok(eng.text.includes('Gemma 4 · Real-Time Search'));
+  assert.ok(!eng.text.includes('Gemma 4 · Real-Time Search'));
   assert.ok(!eng.text.includes('DeepSeek'));
   assert.ok(eng.coachingTip?.naturalPhrase);
 
@@ -108,11 +108,11 @@ test('offlineCompanion provides real-time English grammar tips and breathing sup
   );
   assert.equal(mental.intent, 'mental-support');
   assert.equal(mental.showBreathingTool, true);
-  assert.ok(mental.text.includes('GPT-OSS 20B (Open Weights)'));
+  assert.ok(!mental.text.includes('GPT-OSS 20B (Open Weights)'));
   assert.ok(!mental.text.includes('DeepSeek'));
 });
 
-test('active model identity check reports exact selected model and never defaults to DeepSeek', () => {
+test('active model identity check reports exact selected model when asked and never defaults to DeepSeek', () => {
   const gemmaCheck = generateOfflineCompanionReply(
     'which ai model am i using ?',
     'mam',
@@ -120,7 +120,8 @@ test('active model identity check reports exact selected model and never default
     'gemma-4-free',
     'Gemma 4 · Real-Time Search'
   );
-  assert.ok(gemmaCheck.text.includes('[Gemma 4 · Real-Time Search · ID: gemma-4-free]'));
+  assert.ok(gemmaCheck.text.includes('Gemma 4 · Real-Time Search'));
+  assert.ok(gemmaCheck.text.includes('gemma-4-free'));
   assert.ok(!gemmaCheck.text.includes('DeepSeek'));
 
   const gptCheck = generateOfflineCompanionReply(
@@ -130,7 +131,8 @@ test('active model identity check reports exact selected model and never default
     'gpt-oss-20b-free',
     'GPT-OSS 20B (Open Weights)'
   );
-  assert.ok(gptCheck.text.includes('[GPT-OSS 20B (Open Weights) · ID: gpt-oss-20b-free]'));
+  assert.ok(gptCheck.text.includes('GPT-OSS 20B (Open Weights)'));
+  assert.ok(gptCheck.text.includes('gpt-oss-20b-free'));
   assert.ok(!gptCheck.text.includes('DeepSeek'));
 });
 
@@ -153,4 +155,21 @@ test('shouldTriggerLiveSearch detects phone processor queries and real-time Goog
   assert.equal(shouldTriggerLiveSearch('how are you?'), false);
   assert.equal(shouldTriggerLiveSearch('Turn on Wi-Fi'), false);
   assert.equal(shouldTriggerLiveSearch('hello', true), true);
+});
+
+test('offlineCompanion asks for clarification on gibberish and never hijacks normal prompts containing "sentence"', () => {
+  const gibberish = generateOfflineCompanionReply('rerdddd', 'Sir', 'Md Shabbir Mia', 'gemma-3-free', 'Gemma 3 · Open Weights');
+  assert.ok(!gibberish.text.includes('Core Concept'));
+  assert.ok(!gibberish.text.includes('Gemma 3'));
+  assert.ok(/retype|understand|typo/i.test(gibberish.text));
+
+  const normalPrompt = generateOfflineCompanionReply(
+    'What is photosynthesis? Give a 3 sentence explanation.',
+    'Sir',
+    'Md Shabbir Mia',
+    'gpt-oss-20b-free',
+    'GPT-OSS 20B (Open Weights)'
+  );
+  assert.notEqual(normalPrompt.intent, 'english-tutor');
+  assert.ok(!normalPrompt.text.includes('Ready to practice spoken English'));
 });
