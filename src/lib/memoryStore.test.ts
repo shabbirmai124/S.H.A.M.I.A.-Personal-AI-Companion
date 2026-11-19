@@ -52,11 +52,13 @@ test('extractCoachingTip strips structured tag and parses tip cleanly', () => {
   assert.equal(result.coachingTip?.naturalPhrase, 'I have been focusing on');
 });
 
-test('model catalog includes Gemma 4, 20B, Chinese under-10B flagships, DeepSeek 2B Offline Core, and offline voice models', () => {
+test('model catalog includes Gemma 4, NVIDIA Nemotron, 20B, Chinese under-10B flagships, DeepSeek 2B Offline Core, and offline voice models', () => {
   assert.ok(OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'gemma-4-free'));
   assert.ok(OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'qwen3-8b-chinese'));
   assert.ok(OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'minicpm-o-26'));
   assert.ok(OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'glm-4-9b'));
+  assert.ok(OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'nemotron-nano-8b'));
+  assert.ok(OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'nemotron-mini-4b'));
   assert.ok(
     OPEN_SOURCE_MODEL_CATALOG.some((m) => m.id === 'gpt-oss-20b-free' && m.params.includes('20B'))
   );

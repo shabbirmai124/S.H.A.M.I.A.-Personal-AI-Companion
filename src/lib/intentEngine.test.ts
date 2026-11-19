@@ -173,3 +173,13 @@ test('offlineCompanion asks for clarification on gibberish and never hijacks nor
   assert.notEqual(normalPrompt.intent, 'english-tutor');
   assert.ok(!normalPrompt.text.includes('Ready to practice spoken English'));
 });
+
+test('cleanHtmlArtifacts preserves bullet and paragraph newlines when preserveNewlines is true', () => {
+  const multiLine =
+    '- Plants use sunlight &amp; water.\n- Chlorophyll captures light.\n\n- Oxygen is released into the air.';
+  const cleaned = cleanHtmlArtifacts(multiLine, true);
+  assert.equal(
+    cleaned,
+    '- Plants use sunlight & water.\n- Chlorophyll captures light.\n\n- Oxygen is released into the air.'
+  );
+});

@@ -101,13 +101,29 @@ export async function runFreeWebSearch(query: string): Promise<{
   };
 }
 
+export async function fetchLocalOllamaModels(endpoint: string): Promise<string[]> {
+  const cleanBase = endpoint.replace(/\/+$/, '');
+  try {
+    const res = await fetch(`${cleanBase}/api/tags`, {
+      signal: AbortSignal.timeout(2500),
+    });
+    if (!res.ok) return [];
+    const data = (await res.json()) as { models?: Array<{ name?: string; model?: string }> };
+    return (data.models || [])
+      .map((m) => (m.name || m.model || '').trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 export async function queryLocalOllama(params: {
   endpoint: string;
   modelTag: string;
   prompt: string;
   systemInstruction: string;
   history: Array<{ role: 'user' | 'assistant'; text: string }>;
-}): Promise<string> {
+}): Promise<{ content: string; executedModel: string }> {
   const cleanBase = params.endpoint.replace(/\/+$/, '');
   const messages = [
     { role: 'system', content: params.systemInstruction },
@@ -130,16 +146,31 @@ export async function queryLocalOllama(params: {
 
   if (!response.ok) {
     throw new Error(
-      `Local Ollama endpoint (${cleanBase}) returned HTTP ${response.status}. Verify Ollama is running with CORS enabled.`
+      `Local Ollama endpoint (${cleanBase}) returned HTTP ${response.status}. Verify Ollama is running and "${params.modelTag}" is pulled (ollama pull ${params.modelTag}).`
     );
   }
 
-  const data = (await response.json()) as { message?: { content?: string } };
+  const data = (await response.json()) as {
+    model?: string;
+    message?: { content?: string };
+  };
   const content = data.message?.content?.trim();
+  const executedModel = (data.model || '').trim();
   if (!content) {
     throw new Error('Local Ollama returned an empty response.');
   }
-  return content;
+
+  const { doesBackendModelMatch } = await import('./modelVerification');
+  if (executedModel && !doesBackendModelMatch(params.modelTag, executedModel)) {
+    throw new Error(
+      `Strict Model Verification failed: requested Ollama tag "${params.modelTag}" but endpoint returned "${executedModel}".`
+    );
+  }
+
+  return {
+    content,
+    executedModel: executedModel || params.modelTag,
+  };
 }
 
 const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.4.0/+esm';
@@ -237,6 +268,10 @@ class BrowserOpenSourceLoader {
     return readInstalledIds(INSTALLED_MODELS_KEY);
   }
 
+  public getLoadedModelRepo(): string | null {
+    return this.loadedModelSpec?.hfRepo || null;
+  }
+
   public async loadModel(
     spec: OpenSourceModelSpec,
     onProgress: (pct: number, statusText: string) => void
@@ -245,12 +280,18 @@ class BrowserOpenSourceLoader {
     const safeRamGb = hw.effectiveRamGb;
     if (spec.minRamGb > safeRamGb) {
       throw new Error(
-        `Safety Guard: ${spec.name} requires ${spec.minRamGb}GB+ RAM for local install (detected ${safeRamGb}GB). Use Cloud mode or a ${safeRamGb}GB-compatible model.`
+        `Safety Guard: ${spec.name} requires ${spec.minRamGb}GB+ RAM for local install (detected ${safeRamGb}GB). Use a ${safeRamGb}GB-compatible model or Local Ollama.`
       );
     }
 
-    if (this.loadedModelId === spec.id && (this.generator || this.loadedModelSpec)) {
-      onProgress(100, `${spec.name} active in memory`);
+    if (!spec.hfRepo) {
+      throw new Error(
+        `${spec.name} does not ship browser ONNX weights. Run its exact weights via Local Ollama (${spec.ollamaTag ? `ollama run ${spec.ollamaTag}` : 'Ollama'}) or configure NVIDIA NIM / HuggingFace / OpenRouter API keys.`
+      );
+    }
+
+    if (this.loadedModelId === spec.id && this.generator) {
+      onProgress(100, `${spec.name} ONNX weights active in memory`);
       return;
     }
 
@@ -259,103 +300,86 @@ class BrowserOpenSourceLoader {
     this.loadedModelId = null;
     this.loadedModelSpec = null;
 
-    onProgress(12, `Initializing ${spec.name} (${spec.id})...`);
+    onProgress(10, `Downloading exact ONNX weights (${spec.hfRepo})...`);
 
-    if (spec.hfRepo && spec.minRamGb <= 2) {
+    const transformers = await importTransformers();
+    const nav = navigator as Navigator & {
+      gpu?: { requestAdapter?: () => Promise<unknown> };
+    };
+    let useWebGpu = false;
+    if (nav.gpu && typeof nav.gpu.requestAdapter === 'function') {
       try {
-        const transformers = await importTransformers();
-        const nav = navigator as Navigator & {
-          gpu?: { requestAdapter?: () => Promise<unknown> };
-        };
-        let useWebGpu = false;
-        if (nav.gpu && typeof nav.gpu.requestAdapter === 'function') {
-          try {
-            const adapter = await nav.gpu.requestAdapter();
-            useWebGpu = Boolean(adapter);
-          } catch {
-            useWebGpu = false;
-          }
-        }
-
-        const pipe = (await transformers.pipeline('text-generation', spec.hfRepo, {
-          device: useWebGpu ? 'webgpu' : 'wasm',
-          dtype: 'q4',
-          progress_callback: (info: { status?: string; progress?: number; file?: string }) => {
-            if (typeof info.progress === 'number') {
-              onProgress(
-                Math.max(15, Math.min(98, Math.round(info.progress))),
-                `Caching ${info.file || spec.name}...`
-              );
-            }
-          },
-        })) as TextGenerationPipeline;
-
-        this.generator = pipe;
-        this.loadedModelId = spec.id;
-        this.loadedModelSpec = spec;
-        saveInstalledId(INSTALLED_MODELS_KEY, spec.id);
-        onProgress(100, `${spec.name} installed & active offline`);
-        return;
+        const adapter = await nav.gpu.requestAdapter();
+        useWebGpu = Boolean(adapter);
       } catch {
-        // If browser WASM/WebGPU quota restricts large weight allocation, register verified local profile
+        useWebGpu = false;
       }
     }
 
-    onProgress(55, `Configuring ${spec.name} profile...`);
-    await new Promise((r) => setTimeout(r, 180));
+    const pipe = (await transformers.pipeline('text-generation', spec.hfRepo, {
+      device: useWebGpu ? 'webgpu' : 'wasm',
+      dtype: 'q4',
+      progress_callback: (info: { status?: string; progress?: number; file?: string }) => {
+        if (typeof info.progress === 'number') {
+          onProgress(
+            Math.max(12, Math.min(99, Math.round(info.progress))),
+            `Caching ${info.file || spec.name}...`
+          );
+        } else if (info.status) {
+          onProgress(15, `${info.status}...`);
+        }
+      },
+    })) as TextGenerationPipeline;
+
+    this.generator = pipe;
     this.loadedModelId = spec.id;
     this.loadedModelSpec = spec;
     saveInstalledId(INSTALLED_MODELS_KEY, spec.id);
-    onProgress(100, `${spec.name} ready & active`);
+    onProgress(100, `${spec.name} exact ONNX weights installed & active`);
   }
 
   public async generate(
     prompt: string,
     identity: UserIdentityProfile,
     webContext?: string
-  ): Promise<string> {
-    const addr = identity.addressAs.trim() || 'Sir';
-    const specName = this.loadedModelSpec?.name || 'Open-Source Local Model';
-    const specId = this.loadedModelId || 'offline-core';
-
-    if (this.generator) {
-      try {
-        const sys = [
-          `You are S.H.A.M.I.A., created by and for ${identity.fullName}. Address the user respectfully as "${addr}". Respond in clear, detailed English with complete explanations. Do NOT mention your model name unless the user explicitly asks which model they are using (if asked, state you are running on ${specName}, ID: ${specId}).`,
-          webContext ? `Real-time web context:\n${webContext}` : '',
-        ]
-          .filter(Boolean)
-          .join('\n\n');
-
-        const output = await this.generator(
-          [
-            { role: 'system', content: sys },
-            { role: 'user', content: prompt },
-          ],
-          { max_new_tokens: 320, do_sample: true, temperature: 0.5 }
-        );
-
-        const first = output?.[0]?.generated_text;
-        if (Array.isArray(first)) {
-          const last = first[first.length - 1];
-          if (last?.content) return last.content.trim();
-        } else if (typeof first === 'string') {
-          return first.trim();
-        }
-      } catch {
-        // Fall through to offline companion synthesis for this loaded model
-      }
+  ): Promise<{ text: string; executedModel: string }> {
+    if (!this.generator || !this.loadedModelSpec || !this.loadedModelId) {
+      throw new Error(
+        'Strict Model Verification: No genuine on-device ONNX model weights are currently loaded in browser memory.'
+      );
     }
 
-    const { generateOfflineCompanionReply } = await import('./offlineCompanion');
-    return generateOfflineCompanionReply(
-      prompt,
-      addr,
-      identity.fullName,
-      specId,
-      specName,
-      webContext || ''
-    ).text;
+    const addr = identity.addressAs.trim() || 'Sir';
+    const specName = this.loadedModelSpec.name;
+    const specId = this.loadedModelId;
+    const executedModel = this.loadedModelSpec.hfRepo || specId;
+
+    const sys = [
+      `You are S.H.A.M.I.A., created by and for ${identity.fullName}. Address the user respectfully as "${addr}". Respond in clear, detailed English with complete explanations. Do NOT mention your model name unless the user explicitly asks which model they are using (if asked, state you are running on ${specName}, ID: ${specId}, ONNX repo: ${executedModel}).`,
+      webContext ? `Real-time web context:\n${webContext}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
+
+    const output = await this.generator(
+      [
+        { role: 'system', content: sys },
+        { role: 'user', content: prompt },
+      ],
+      { max_new_tokens: 320, do_sample: true, temperature: 0.5 }
+    );
+
+    const first = output?.[0]?.generated_text;
+    if (Array.isArray(first)) {
+      const last = first[first.length - 1];
+      if (last?.content) {
+        return { text: last.content.trim(), executedModel };
+      }
+    } else if (typeof first === 'string' && first.trim()) {
+      return { text: first.trim(), executedModel };
+    }
+
+    throw new Error(`On-device ONNX pipeline (${executedModel}) returned an empty response.`);
   }
 }
 

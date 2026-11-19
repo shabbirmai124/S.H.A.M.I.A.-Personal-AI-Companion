@@ -26,9 +26,18 @@ import {
   cleanHtmlArtifacts,
   generateOfflineCompanionReply,
 } from './src/lib/offlineCompanion.ts';
+import {
+  MODEL_WEIGHT_REGISTRY,
+  buildStrictMismatchGuidance,
+  createVerifiedProvenance,
+  doesBackendModelMatch,
+  formatModelIdentityAnswer,
+  normalizeModelIdentifier,
+} from './src/lib/modelVerification.ts';
 import type {
   ConversationalIntent,
   GroundingLink,
+  ModelExecutionProvider,
   PendingAction,
   PermissionCapability,
   PermissionPolicy,
@@ -49,6 +58,8 @@ const MODEL_LABELS: Record<string, string> = {
   'qwen3-4b-edge': 'Qwen 3 4B (Phone Efficiency King)',
   'minicpm-o-26': 'MiniCPM-o 2.6 8B (Chinese Voice AI)',
   'glm-4-9b': 'GLM-4 9B Chat (Zhipu Chinese Open)',
+  'nemotron-nano-8b': 'NVIDIA Nemotron Nano 8B (Open Weights)',
+  'nemotron-mini-4b': 'NVIDIA Nemotron Mini 4B (Mobile Edge)',
   'gpt-oss-20b-free': 'GPT-OSS 20B (Open Weights)',
   'gemma-3-free': 'Gemma 3 · Open Weights',
   'llama-32-free': 'Llama 3.2 1B Instruct',
@@ -61,7 +72,7 @@ const MODEL_LABELS: Record<string, string> = {
   'offline-core': 'DeepSeek 2B · S.H.A.M.I.A. Offline Core',
 };
 
-let pollinationsCooldownUntil = 0;
+let cachedLiveGemmaModels: { fetchedAt: number; models: string[] } | null = null;
 
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
@@ -78,6 +89,155 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
+function getConfiguredKey(name: string, placeholder: string): string | null {
+  const val = process.env[name]?.trim();
+  if (!val || val === placeholder) return null;
+  return val;
+}
+
+async function getLiveGoogleGemmaModels(ai: GoogleGenAI | null): Promise<string[]> {
+  if (!ai) return [];
+  const now = Date.now();
+  if (cachedLiveGemmaModels && now - cachedLiveGemmaModels.fetchedAt < 5 * 60 * 1000) {
+    return cachedLiveGemmaModels.models;
+  }
+  const found: string[] = [];
+  try {
+    const pager = await ai.models.list();
+    for await (const m of pager) {
+      const rawName = (m as { name?: string }).name || '';
+      const shortName = normalizeModelIdentifier(rawName);
+      if (shortName.startsWith('gemma-')) {
+        found.push(shortName);
+      }
+    }
+  } catch (err) {
+    console.warn(
+      '[S.H.A.M.I.A. Verify] Could not list Google API models:',
+      err instanceof Error ? err.message : String(err)
+    );
+  }
+  cachedLiveGemmaModels = { fetchedAt: now, models: found };
+  return found;
+}
+
+function resolveBestOnlineExactProvider(
+  modelId: string,
+  liveGemmaModels: string[]
+): {
+  exactWeightsAvailable: boolean;
+  provider?: ModelExecutionProvider;
+  backendModelId?: string;
+} {
+  const spec = MODEL_WEIGHT_REGISTRY[modelId];
+  if (!spec) return { exactWeightsAvailable: false };
+
+  if (spec.isBuiltInOfflineCore) {
+    return {
+      exactWeightsAvailable: true,
+      provider: 'offline-core',
+      backendModelId: 'shamia-offline-core',
+    };
+  }
+
+  if (spec.googleGemmaModels && liveGemmaModels.length > 0) {
+    const matched = spec.googleGemmaModels.find((candidate) =>
+      liveGemmaModels.some((live) => doesBackendModelMatch(candidate, live))
+    );
+    if (matched) {
+      return {
+        exactWeightsAvailable: true,
+        provider: 'google-gemma-api',
+        backendModelId: matched,
+      };
+    }
+  }
+
+  if (spec.nvidiaModel && getConfiguredKey('NVIDIA_API_KEY', 'MY_NVIDIA_API_KEY')) {
+    return {
+      exactWeightsAvailable: true,
+      provider: 'nvidia-nim',
+      backendModelId: spec.nvidiaModel,
+    };
+  }
+
+  if (spec.hfModel && getConfiguredKey('HF_TOKEN', 'MY_HUGGINGFACE_TOKEN')) {
+    return {
+      exactWeightsAvailable: true,
+      provider: 'huggingface-router',
+      backendModelId: spec.hfModel,
+    };
+  }
+
+  if (spec.openRouterModel && getConfiguredKey('OPENROUTER_API_KEY', 'MY_OPENROUTER_API_KEY')) {
+    return {
+      exactWeightsAvailable: true,
+      provider: 'openrouter',
+      backendModelId: spec.openRouterModel,
+    };
+  }
+
+  if (spec.ollamaTag && getConfiguredKey('OLLAMA_URL', '')) {
+    return {
+      exactWeightsAvailable: true,
+      provider: 'ollama-local',
+      backendModelId: spec.ollamaTag,
+    };
+  }
+
+  return { exactWeightsAvailable: false };
+}
+
+async function callVerifiedOpenAiProvider(params: {
+  url: string;
+  apiKey: string;
+  expectedModel: string;
+  messages: Array<{ role: string; content: string }>;
+  temperature: number;
+  extraHeaders?: Record<string, string>;
+}): Promise<{ text: string; executedModel: string } | null> {
+  try {
+    const res = await fetch(params.url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${params.apiKey}`,
+        'Content-Type': 'application/json',
+        ...(params.extraHeaders || {}),
+      },
+      body: JSON.stringify({
+        model: params.expectedModel,
+        messages: params.messages,
+        max_tokens: 900,
+        temperature: params.temperature,
+      }),
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      model?: string;
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const text = json.choices?.[0]?.message?.content?.trim();
+    const returnedModel = (json.model || '').trim();
+    if (!text) return null;
+
+    // Strict check: if provider returned a model ID, verify it matches the exact requested model
+    if (returnedModel && !doesBackendModelMatch(params.expectedModel, returnedModel)) {
+      console.warn(
+        `[S.H.A.M.I.A. Strict Reject] Provider ${params.url} returned "${returnedModel}" instead of requested "${params.expectedModel}".`
+      );
+      return null;
+    }
+
+    return {
+      text,
+      executedModel: returnedModel || params.expectedModel,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function sanitizeHistoryTurnText(raw: string): string {
   return cleanHtmlArtifacts(raw)
     .replace(/^\[[^\]]{2,90}\]\s*/g, '')
@@ -91,7 +251,7 @@ function enforceActiveModelOutput(
   modelLabel: string,
   modelId: string
 ): string {
-  let cleaned = cleanHtmlArtifacts(rawText);
+  let cleaned = cleanHtmlArtifacts(rawText, true);
   if (!cleaned) return '';
 
   // Strip any leading bracketed model header so normal responses stay clean and natural
@@ -413,6 +573,7 @@ interface ChatRequestBody {
   useResearch?: boolean;
   modelId?: string;
   modelLabel?: string;
+  strictModelMatch?: boolean;
   ensembleEnabled?: boolean;
   ensembleModelIds?: string[];
 }
@@ -422,14 +583,54 @@ async function createApp() {
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', (_req, res) => {
-    const hasKey = Boolean(
-      process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'
-    );
+    const hasKey = Boolean(getConfiguredKey('GEMINI_API_KEY', 'MY_GEMINI_API_KEY'));
     res.json({
       ok: true,
       aiConfigured: hasKey,
       freeSearchAvailable: true,
       supportedModels: Object.keys(MODEL_LABELS),
+    });
+  });
+
+  app.get('/api/models/verify', async (_req, res) => {
+    const ai = getGeminiClient();
+    const liveGemmaModels = await getLiveGoogleGemmaModels(ai);
+    const providers = {
+      googleGemmaApi: liveGemmaModels.length > 0,
+      googleGeminiFallback: Boolean(ai),
+      nvidiaNim: Boolean(getConfiguredKey('NVIDIA_API_KEY', 'MY_NVIDIA_API_KEY')),
+      huggingfaceRouter: Boolean(getConfiguredKey('HF_TOKEN', 'MY_HUGGINGFACE_TOKEN')),
+      openRouter: Boolean(getConfiguredKey('OPENROUTER_API_KEY', 'MY_OPENROUTER_API_KEY')),
+      serverOllama: Boolean(getConfiguredKey('OLLAMA_URL', '')),
+    };
+
+    const models: Record<
+      string,
+      {
+        exactWeightsAvailableOnline: boolean;
+        exactProvider?: ModelExecutionProvider;
+        exactBackendModelId?: string;
+        onnxBrowserRepo?: string;
+        ollamaTag?: string;
+      }
+    > = {};
+
+    for (const [id, spec] of Object.entries(MODEL_WEIGHT_REGISTRY)) {
+      const resolved = resolveBestOnlineExactProvider(id, liveGemmaModels);
+      models[id] = {
+        exactWeightsAvailableOnline: resolved.exactWeightsAvailable,
+        exactProvider: resolved.provider,
+        exactBackendModelId: resolved.backendModelId,
+        onnxBrowserRepo: spec.onnxBrowserRepo,
+        ollamaTag: spec.ollamaTag,
+      };
+    }
+
+    res.json({
+      ok: true,
+      providers,
+      liveGemmaModels,
+      models,
     });
   });
 
@@ -459,7 +660,9 @@ async function createApp() {
     }
 
     const requestedModelId = (body.modelId || 'gemma-4-free').trim();
+    const strictModelMatch = body.strictModelMatch !== false;
     const modelProfile = MODEL_DISTINCT_PROFILES[requestedModelId];
+    const weightSpec = MODEL_WEIGHT_REGISTRY[requestedModelId];
     const modelLabel =
       MODEL_LABELS[requestedModelId] ||
       body.modelLabel?.trim() ||
@@ -467,6 +670,9 @@ async function createApp() {
       requestedModelId;
 
     const detectedIntent: ConversationalIntent = body.detectedIntent || 'general';
+    const ai = getGeminiClient();
+    const liveGemmaModels = await getLiveGoogleGemmaModels(ai);
+    const liveExactStatus = resolveBestOnlineExactProvider(requestedModelId, liveGemmaModels);
 
     // Check if the user is directly asking which AI model is active right now
     const isModelIdentityQuery =
@@ -475,22 +681,38 @@ async function createApp() {
       );
 
     console.log(
-      `[S.H.A.M.I.A. Router] Active Model Request -> ID="${requestedModelId}" | Label="${modelLabel}" | Intent="${detectedIntent}" | ModelCheck=${isModelIdentityQuery}`
+      `[S.H.A.M.I.A. Router] Active Model Request -> ID="${requestedModelId}" | Label="${modelLabel}" | Strict=${strictModelMatch} | ExactAvailable=${liveExactStatus.exactWeightsAvailable} (${liveExactStatus.provider || 'none'}:${liveExactStatus.backendModelId || 'none'})`
     );
 
     if (isModelIdentityQuery) {
       const arch = modelProfile?.architectureNote || 'Open-Weight Neural Engine';
-      const exactReply = enforceActiveModelOutput(
-        `You are currently running on **${modelLabel}** (Model ID: \`${requestedModelId}\` · Architecture: ${arch}), ${addr}. I am S.H.A.M.I.A., created by and for ${identity.fullName}, and I am generating responses strictly from ${modelLabel} without falling back to any default model.`,
+      const honestIdentityText = formatModelIdentityAnswer({
+        modelId: requestedModelId,
         modelLabel,
-        requestedModelId
-      );
+        addr,
+        creatorName: identity.fullName,
+        architectureNote: arch,
+        exactProvider: liveExactStatus.provider,
+        exactBackendModelId: liveExactStatus.backendModelId,
+        exactWeightsAvailable: liveExactStatus.exactWeightsAvailable,
+        strictMode: strictModelMatch,
+      });
+      const provenance = createVerifiedProvenance({
+        requestedModelId,
+        requestedModelLabel: modelLabel,
+        executedProvider: liveExactStatus.provider || 'google-gemini-fallback',
+        executedModelId: liveExactStatus.backendModelId || 'unconnected',
+        strictMode: strictModelMatch,
+        exactWeightsVerified: liveExactStatus.exactWeightsAvailable,
+      });
       res.json({
-        replyText: exactReply,
+        replyText: enforceActiveModelOutput(honestIdentityText, modelLabel, requestedModelId),
         groundingLinks: [],
         source: requestedModelId === 'offline-core' ? 'offline-core' : 'cloud-gemini',
         modelLabel,
         activeModelId: requestedModelId,
+        requestedModelId,
+        provenance,
       });
       return;
     }
@@ -537,77 +759,6 @@ async function createApp() {
       ? `\n\n[LIVE WEB SEARCH CONTEXT — SYNTHESIZE INTO A CLEAN, CONSTRUCTIVE, USER-FRIENDLY ANSWER IN YOUR OWN WORDS. NEVER REPEAT CUT-OFF SNIPPETS OR HTML ARTIFACTS]:\n${preFetchedSearchSummary}`
       : '';
 
-    const ai = getGeminiClient();
-    const ensembleIds = Array.isArray(body.ensembleModelIds)
-      ? body.ensembleModelIds.filter((id) => typeof id === 'string' && id.trim()).slice(0, 4)
-      : [];
-    const useEnsemble = Boolean(body.ensembleEnabled) && ensembleIds.length >= 2;
-
-    // 1. Multi-Model Ensemble Mode
-    if (useEnsemble) {
-      const activeNames = ensembleIds
-        .slice(0, 3)
-        .map((id) => MODEL_LABELS[id]?.split('·')[0]?.trim() || id)
-        .join(' + ');
-      const ensembleLabel = `Ensemble (${activeNames})`;
-
-      const sharedMessages = [
-        {
-          role: 'system',
-          content: `${systemInstruction}${searchPromptBlock}`,
-        },
-        ...(body.history || [])
-          .slice(-4)
-          .map((t) => ({
-            role: t.role === 'user' ? 'user' : 'assistant',
-            content: sanitizeHistoryTurnText(t.text),
-          }))
-          .filter((t) => t.content.length > 0),
-        { role: 'user', content: message },
-      ];
-
-      if (Date.now() >= pollinationsCooldownUntil) {
-        try {
-          const pr = await fetch('https://text.pollinations.ai/openai', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model: 'openai-fast',
-              messages: sharedMessages,
-              max_tokens: 900,
-              temperature: 0.35,
-            }),
-            signal: AbortSignal.timeout(8000),
-          });
-          if (pr.status === 402 || pr.status === 429) {
-            pollinationsCooldownUntil = Date.now() + 46_000;
-          } else if (pr.ok) {
-            const pj = (await pr.json()) as { choices?: Array<{ message?: { content?: string } }> };
-            const rawText = pj.choices?.[0]?.message?.content?.trim();
-            if (rawText) {
-              const { cleanText, coachingTip } = extractCoachingTip(rawText);
-              res.json({
-                replyText: enforceActiveModelOutput(cleanText || rawText, ensembleLabel, 'ensemble'),
-                coachingTip,
-                showBreathingTool: detectedIntent === 'mental-support',
-                groundingLinks: preFetchedSearchLinks.slice(0, 5),
-                source: useResearch ? 'cloud-research' : 'cloud-gemini',
-                modelLabel: ensembleLabel,
-                activeModelId: 'ensemble',
-              });
-              return;
-            }
-          }
-        } catch {
-          // Fall through to Gemma 3 / Gemini cascade
-        }
-      }
-    }
-
-    // 2. Open-Weight Models & HuggingFace / Pollinations Router
-    const isGemmaTier =
-      requestedModelId === 'gemma-4-free' || requestedModelId === 'gemma-3-free';
-
     const openMessages = [
       {
         role: 'system',
@@ -623,45 +774,78 @@ async function createApp() {
       { role: 'user', content: message },
     ];
 
-    // 2A. If Gemma 4 or Gemma 3 is selected and Gemini API key is configured, use active high-throughput Google models first
-    if (ai && isGemmaTier && detectedIntent !== 'device-action') {
-      const candidateGeminiModels = ['gemini-4-hydrogen', 'gemini-3.1-flash-lite'];
+    // =========================================================================
+    // PATH 0: Built-In S.H.A.M.I.A. Offline Core (only when explicitly selected)
+    // =========================================================================
+    if (weightSpec?.isBuiltInOfflineCore) {
+      const offlineReply = generateOfflineCompanionReply(
+        message,
+        addr,
+        identity.fullName,
+        requestedModelId,
+        modelLabel,
+        preFetchedSearchSummary
+      );
+      const provenance = createVerifiedProvenance({
+        requestedModelId,
+        requestedModelLabel: modelLabel,
+        executedProvider: 'offline-core',
+        executedModelId: 'shamia-offline-core',
+        strictMode: strictModelMatch,
+        exactWeightsVerified: true,
+      });
+      res.json({
+        replyText: enforceActiveModelOutput(offlineReply.text, modelLabel, requestedModelId),
+        coachingTip: offlineReply.coachingTip,
+        showBreathingTool: offlineReply.showBreathingTool,
+        groundingLinks: preFetchedSearchLinks.slice(0, 4),
+        source: 'offline-core',
+        modelLabel,
+        activeModelId: requestedModelId,
+        requestedModelId,
+        provenance,
+      });
+      return;
+    }
 
-      for (const candidateModel of candidateGeminiModels) {
+    // =========================================================================
+    // PATH 1: Exact Google Open-Weight Gemma API (ONLY for Gemma catalog models)
+    // =========================================================================
+    if (ai && weightSpec?.googleGemmaModels && detectedIntent !== 'device-action') {
+      const candidateGemmaModels =
+        liveGemmaModels.length > 0
+          ? weightSpec.googleGemmaModels.filter((candidate) =>
+              liveGemmaModels.some((live) => doesBackendModelMatch(candidate, live))
+            )
+          : weightSpec.googleGemmaModels;
+
+      for (const candidateGemma of candidateGemmaModels) {
         try {
-          const turns = buildValidAlternatingTurns(
+          // Gemma open-weight endpoints on Google API do not support developer systemInstruction;
+          // fold the system instruction cleanly into the opening user turn.
+          const baseTurns = buildValidAlternatingTurns(
             body.history,
             `${message}${searchPromptBlock}`
           );
-
-          const config: Record<string, unknown> = {
-            systemInstruction: `${systemInstruction}${searchPromptBlock}`,
-          };
-          if (useResearch) {
-            config.tools = [{ googleSearch: {} }];
+          if (baseTurns.length > 0 && baseTurns[0].role === 'user') {
+            baseTurns[0].parts[0].text = `[SYSTEM INSTRUCTIONS]\n${systemInstruction}${searchPromptBlock}\n\n[USER MESSAGE]\n${baseTurns[0].parts[0].text}`;
           }
 
           const gemmaRes = await ai.models.generateContent({
-            model: candidateModel,
-            contents: turns,
-            config,
+            model: candidateGemma,
+            contents: baseTurns,
           });
           const rawGemma = gemmaRes.text?.trim();
           if (rawGemma) {
             const { cleanText, coachingTip } = extractCoachingTip(rawGemma);
-            const groundingChunks =
-              gemmaRes.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-            const groundingLinks: GroundingLink[] = [];
-            for (const chunk of groundingChunks) {
-              const web = (chunk as { web?: { uri?: string; title?: string } }).web;
-              if (web?.uri && web?.title) {
-                groundingLinks.push({ title: web.title, uri: web.uri });
-              }
-            }
-            if (useResearch && groundingLinks.length === 0) {
-              groundingLinks.push(...preFetchedSearchLinks);
-            }
-
+            const provenance = createVerifiedProvenance({
+              requestedModelId,
+              requestedModelLabel: modelLabel,
+              executedProvider: 'google-gemma-api',
+              executedModelId: candidateGemma,
+              strictMode: strictModelMatch,
+              exactWeightsVerified: true,
+            });
             res.json({
               replyText: enforceActiveModelOutput(
                 cleanText || rawGemma,
@@ -670,150 +854,245 @@ async function createApp() {
               ),
               coachingTip,
               showBreathingTool: detectedIntent === 'mental-support',
-              groundingLinks: groundingLinks.slice(0, 5),
+              groundingLinks: preFetchedSearchLinks.slice(0, 5),
               source: useResearch ? 'cloud-research' : 'cloud-gemini',
               modelLabel,
               activeModelId: requestedModelId,
+              requestedModelId,
+              provenance,
             });
             return;
           }
         } catch (err) {
           console.warn(
-            `[S.H.A.M.I.A. Step 2A] ${candidateModel} failed:`,
+            `[S.H.A.M.I.A. Exact Gemma] ${candidateGemma} failed:`,
             err instanceof Error ? err.message : String(err)
           );
         }
       }
     }
 
-    // 2B. Optional HuggingFace Router if HF_TOKEN is configured
-    if (process.env.HF_TOKEN && process.env.HF_TOKEN !== 'MY_HUGGINGFACE_TOKEN') {
-      try {
-        const hfModel =
-          requestedModelId === 'qwen3-8b-chinese'
-            ? 'Qwen/Qwen3-8B'
-            : requestedModelId === 'qwen3-4b-edge'
-              ? 'Qwen/Qwen3-4B'
-              : requestedModelId === 'minicpm-o-26'
-                ? 'openbmb/MiniCPM-o-2_6'
-                : requestedModelId === 'glm-4-9b'
-                  ? 'THUDM/glm-4-9b-chat'
-                  : requestedModelId === 'gpt-oss-20b-free'
-                    ? 'openai/gpt-oss-20b'
-                    : requestedModelId === 'llama-32-free'
-                      ? 'meta-llama/Llama-3.2-3B-Instruct'
-                      : requestedModelId === 'deepseek-r1-1.5b' || requestedModelId === 'offline-core'
-                        ? 'deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B'
-                        : requestedModelId === 'phi35-mini-free'
-                          ? 'microsoft/Phi-3.5-mini-instruct'
-                          : requestedModelId === 'smollm2-1.7b-edge' || requestedModelId === 'smollm2-360m-webgpu'
-                            ? 'HuggingFaceTB/SmolLM2-1.7B-Instruct'
-                            : isGemmaTier
-                              ? 'google/gemma-2-9b-it'
-                              : 'Qwen/Qwen2.5-1.5B-Instruct';
-
-        const hfRes = await fetch('https://router.huggingface.co/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${process.env.HF_TOKEN.trim()}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: hfModel,
-            messages: openMessages,
-            max_tokens: 750,
-            temperature: modelProfile?.temperature ?? 0.4,
-          }),
-          signal: AbortSignal.timeout(8500),
+    // =========================================================================
+    // PATH 2: Exact NVIDIA NIM Open-Weight API (NVIDIA_API_KEY)
+    // =========================================================================
+    const nvidiaKey = getConfiguredKey('NVIDIA_API_KEY', 'MY_NVIDIA_API_KEY');
+    if (nvidiaKey && weightSpec?.nvidiaModel) {
+      const nvidiaRes = await callVerifiedOpenAiProvider({
+        url: 'https://integrate.api.nvidia.com/v1/chat/completions',
+        apiKey: nvidiaKey,
+        expectedModel: weightSpec.nvidiaModel,
+        messages: openMessages,
+        temperature: modelProfile?.temperature ?? 0.4,
+      });
+      if (nvidiaRes) {
+        const { cleanText, coachingTip } = extractCoachingTip(nvidiaRes.text);
+        const provenance = createVerifiedProvenance({
+          requestedModelId,
+          requestedModelLabel: modelLabel,
+          executedProvider: 'nvidia-nim',
+          executedModelId: nvidiaRes.executedModel,
+          strictMode: strictModelMatch,
+          exactWeightsVerified: true,
         });
-        if (hfRes.ok) {
-          const hfJson = (await hfRes.json()) as {
-            choices?: Array<{ message?: { content?: string } }>;
+        res.json({
+          replyText: enforceActiveModelOutput(
+            cleanText || nvidiaRes.text,
+            modelLabel,
+            requestedModelId
+          ),
+          coachingTip,
+          showBreathingTool: detectedIntent === 'mental-support',
+          groundingLinks: preFetchedSearchLinks.slice(0, 4),
+          source: useResearch ? 'cloud-research' : 'cloud-gemini',
+          modelLabel,
+          activeModelId: requestedModelId,
+          requestedModelId,
+          provenance,
+        });
+        return;
+      }
+    }
+
+    // =========================================================================
+    // PATH 3: Exact HuggingFace Inference Router (HF_TOKEN)
+    // =========================================================================
+    const hfToken = getConfiguredKey('HF_TOKEN', 'MY_HUGGINGFACE_TOKEN');
+    if (hfToken && weightSpec?.hfModel) {
+      const hfRes = await callVerifiedOpenAiProvider({
+        url: 'https://router.huggingface.co/v1/chat/completions',
+        apiKey: hfToken,
+        expectedModel: weightSpec.hfModel,
+        messages: openMessages,
+        temperature: modelProfile?.temperature ?? 0.4,
+      });
+      if (hfRes) {
+        const { cleanText, coachingTip } = extractCoachingTip(hfRes.text);
+        const provenance = createVerifiedProvenance({
+          requestedModelId,
+          requestedModelLabel: modelLabel,
+          executedProvider: 'huggingface-router',
+          executedModelId: hfRes.executedModel,
+          strictMode: strictModelMatch,
+          exactWeightsVerified: true,
+        });
+        res.json({
+          replyText: enforceActiveModelOutput(
+            cleanText || hfRes.text,
+            modelLabel,
+            requestedModelId
+          ),
+          coachingTip,
+          showBreathingTool: detectedIntent === 'mental-support',
+          groundingLinks: preFetchedSearchLinks.slice(0, 4),
+          source: useResearch ? 'cloud-research' : 'cloud-gemini',
+          modelLabel,
+          activeModelId: requestedModelId,
+          requestedModelId,
+          provenance,
+        });
+        return;
+      }
+    }
+
+    // =========================================================================
+    // PATH 4: Exact OpenRouter Open-Weight API (OPENROUTER_API_KEY)
+    // =========================================================================
+    const openRouterKey = getConfiguredKey('OPENROUTER_API_KEY', 'MY_OPENROUTER_API_KEY');
+    if (openRouterKey && weightSpec?.openRouterModel) {
+      const orRes = await callVerifiedOpenAiProvider({
+        url: 'https://openrouter.ai/api/v1/chat/completions',
+        apiKey: openRouterKey,
+        expectedModel: weightSpec.openRouterModel,
+        messages: openMessages,
+        temperature: modelProfile?.temperature ?? 0.4,
+        extraHeaders: {
+          'X-Title': 'S.H.A.M.I.A.',
+        },
+      });
+      if (orRes) {
+        const { cleanText, coachingTip } = extractCoachingTip(orRes.text);
+        const provenance = createVerifiedProvenance({
+          requestedModelId,
+          requestedModelLabel: modelLabel,
+          executedProvider: 'openrouter',
+          executedModelId: orRes.executedModel,
+          strictMode: strictModelMatch,
+          exactWeightsVerified: true,
+        });
+        res.json({
+          replyText: enforceActiveModelOutput(
+            cleanText || orRes.text,
+            modelLabel,
+            requestedModelId
+          ),
+          coachingTip,
+          showBreathingTool: detectedIntent === 'mental-support',
+          groundingLinks: preFetchedSearchLinks.slice(0, 4),
+          source: useResearch ? 'cloud-research' : 'cloud-gemini',
+          modelLabel,
+          activeModelId: requestedModelId,
+          requestedModelId,
+          provenance,
+        });
+        return;
+      }
+    }
+
+    // =========================================================================
+    // PATH 5: Exact Server-Side Ollama (OLLAMA_URL)
+    // =========================================================================
+    const serverOllamaUrl = getConfiguredKey('OLLAMA_URL', '');
+    if (serverOllamaUrl && weightSpec?.ollamaTag) {
+      try {
+        const oRes = await fetch(`${serverOllamaUrl.replace(/\/+$/, '')}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: weightSpec.ollamaTag,
+            messages: openMessages,
+            stream: false,
+          }),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (oRes.ok) {
+          const oJson = (await oRes.json()) as {
+            model?: string;
+            message?: { content?: string };
           };
-          const rawReply = hfJson.choices?.[0]?.message?.content?.trim();
-          if (rawReply) {
-            const { cleanText, coachingTip } = extractCoachingTip(rawReply);
+          const rawOllama = oJson.message?.content?.trim();
+          const returnedTag = (oJson.model || '').trim();
+          if (
+            rawOllama &&
+            (!returnedTag || doesBackendModelMatch(weightSpec.ollamaTag, returnedTag))
+          ) {
+            const { cleanText, coachingTip } = extractCoachingTip(rawOllama);
+            const provenance = createVerifiedProvenance({
+              requestedModelId,
+              requestedModelLabel: modelLabel,
+              executedProvider: 'ollama-local',
+              executedModelId: returnedTag || weightSpec.ollamaTag,
+              strictMode: strictModelMatch,
+              exactWeightsVerified: true,
+            });
             res.json({
               replyText: enforceActiveModelOutput(
-                cleanText || rawReply,
+                cleanText || rawOllama,
                 modelLabel,
                 requestedModelId
               ),
               coachingTip,
               showBreathingTool: detectedIntent === 'mental-support',
               groundingLinks: preFetchedSearchLinks.slice(0, 4),
-              source: useResearch ? 'cloud-research' : 'cloud-gemini',
+              source: 'ollama-local',
               modelLabel,
               activeModelId: requestedModelId,
+              requestedModelId,
+              provenance,
             });
             return;
           }
         }
       } catch {
-        // Fall through
+        // Proceed to strict gate
       }
     }
 
-    // 2C. Free Keyless Open-Weight Cloud Router (GPT-OSS 20B via Pollinations when not in 45s IP cooldown)
-    if (detectedIntent !== 'device-action' && Date.now() >= pollinationsCooldownUntil) {
-      const attemptPayloads = [
-        openMessages,
-        [
-          {
-            role: 'system',
-            content: `You are S.H.A.M.I.A., created by and for ${identity.fullName}. Always respond in clear, natural, detailed English and address the user respectfully as "${addr}". Give complete, well-structured answers with clear explanations. Do NOT mention or prefix your AI model name in normal responses; ONLY state that you are using ${modelLabel} (ID: ${requestedModelId}) if the user explicitly asks which model they are using.${searchPromptBlock}`,
-          },
-          { role: 'user', content: message },
-        ],
-      ];
-
-      for (const msgs of attemptPayloads) {
-        try {
-          const freeRes = await fetch('https://text.pollinations.ai/openai', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model: 'openai-fast',
-              messages: msgs,
-              max_tokens: 900,
-              temperature: modelProfile?.temperature ?? 0.4,
-            }),
-            signal: AbortSignal.timeout(12000),
-          });
-          if (freeRes.status === 402 || freeRes.status === 429) {
-            pollinationsCooldownUntil = Date.now() + 46_000;
-            break;
-          }
-          if (freeRes.ok) {
-            const freeJson = (await freeRes.json()) as {
-              choices?: Array<{ message?: { content?: string } }>;
-            };
-            const rawReply = freeJson.choices?.[0]?.message?.content?.trim();
-            if (rawReply) {
-              const { cleanText, coachingTip } = extractCoachingTip(rawReply);
-              res.json({
-                replyText: enforceActiveModelOutput(
-                  cleanText || rawReply,
-                  modelLabel,
-                  requestedModelId
-                ),
-                coachingTip,
-                showBreathingTool: detectedIntent === 'mental-support',
-                groundingLinks: preFetchedSearchLinks.slice(0, 4),
-                source: useResearch ? 'cloud-research' : 'cloud-gemini',
-                modelLabel,
-                activeModelId: requestedModelId,
-              });
-              return;
-            }
-          }
-        } catch {
-          // Proceed immediately to Open-Weight Gemma / Gemini engine
-        }
-      }
+    // =========================================================================
+    // STRICT VERIFICATION GATE: NEVER silently substitute a different model when strictModelMatch is ON
+    // =========================================================================
+    if (strictModelMatch && detectedIntent !== 'device-action') {
+      const guidance = buildStrictMismatchGuidance({
+        modelId: requestedModelId,
+        modelLabel,
+        addr,
+        liveGemmaModels,
+      });
+      const provenance = createVerifiedProvenance({
+        requestedModelId,
+        requestedModelLabel: modelLabel,
+        executedProvider: 'offline-core',
+        executedModelId: 'none',
+        strictMode: true,
+        exactWeightsVerified: false,
+        blockedByStrictMode: true,
+      });
+      res.json({
+        replyText: guidance,
+        groundingLinks: [],
+        source: 'offline-core',
+        modelLabel,
+        activeModelId: requestedModelId,
+        requestedModelId,
+        blockedByStrictMode: true,
+        provenance,
+      });
+      return;
     }
 
-    // 3. Live High-Throughput Neural Engine (guarantees complete, detailed answers for all 14 models)
+    // =========================================================================
+    // PATH 6 (Strict Mode OFF or device-action tool routing):
+    // Compatible Cloud Engine — ALWAYS reports honest provenance (exactWeightsVerified: false)
+    // =========================================================================
     if (ai) {
       const mayNeedDeviceTools =
         detectedIntent === 'device-action' ||
@@ -1056,6 +1335,14 @@ async function createApp() {
               modelLabel,
               requestedModelId
             );
+            const provenance = createVerifiedProvenance({
+              requestedModelId,
+              requestedModelLabel: modelLabel,
+              executedProvider: 'google-gemini-fallback',
+              executedModelId: candidateModel,
+              strictMode: strictModelMatch,
+              exactWeightsVerified: false,
+            });
             res.json({
               replyText: finalText,
               proposedAction,
@@ -1066,19 +1353,21 @@ async function createApp() {
               source: useResearch ? 'cloud-research' : 'cloud-gemini',
               modelLabel,
               activeModelId: requestedModelId,
+              requestedModelId,
+              provenance,
             });
             return;
           }
         } catch (err) {
           console.warn(
-            `[S.H.A.M.I.A. Step 3] ${candidateModel} failed:`,
+            `[S.H.A.M.I.A. Path 6 Fallback] ${candidateModel} failed:`,
             err instanceof Error ? err.message : String(err)
           );
         }
       }
     }
 
-    // 4. Guaranteed Constructive Server Synthesis strictly bound to requestedModelId & modelLabel (never 500 or wrong model)
+    // Final honest fallback (only reached if strictModelMatch is OFF and cloud is unreachable)
     const constructiveFallback = generateOfflineCompanionReply(
       message,
       addr,
@@ -1087,6 +1376,14 @@ async function createApp() {
       modelLabel,
       preFetchedSearchSummary
     );
+    const provenance = createVerifiedProvenance({
+      requestedModelId,
+      requestedModelLabel: modelLabel,
+      executedProvider: 'offline-core',
+      executedModelId: 'shamia-offline-core',
+      strictMode: strictModelMatch,
+      exactWeightsVerified: requestedModelId === 'offline-core',
+    });
 
     res.json({
       replyText: enforceActiveModelOutput(
@@ -1097,14 +1394,11 @@ async function createApp() {
       coachingTip: constructiveFallback.coachingTip,
       showBreathingTool: constructiveFallback.showBreathingTool,
       groundingLinks: preFetchedSearchLinks.slice(0, 4),
-      source:
-        requestedModelId === 'offline-core'
-          ? 'offline-core'
-          : useResearch
-            ? 'cloud-research'
-            : 'cloud-gemini',
+      source: 'offline-core',
       modelLabel,
       activeModelId: requestedModelId,
+      requestedModelId,
+      provenance,
     });
   });
 

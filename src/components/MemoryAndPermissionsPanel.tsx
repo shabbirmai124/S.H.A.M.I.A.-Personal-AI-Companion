@@ -15,7 +15,7 @@ import type {
   VoicePersona,
 } from '../types/shamia';
 import { DeviceControlDeck } from './DeviceControlDeck';
-import { OpenSourceModelHub } from './OpenSourceModelHub';
+import { OpenSourceModelHub, type ServerModelVerifyEntry } from './OpenSourceModelHub';
 
 interface MemoryAndPermissionsPanelProps {
   tasks: TaskItem[];
@@ -29,8 +29,11 @@ interface MemoryAndPermissionsPanelProps {
   selectedModelId: string;
   ollamaUrl: string;
   webSearchEnabled: boolean;
+  strictModelMatch: boolean;
   ensembleEnabled: boolean;
   ensembleModelIds: string[];
+  verifiedModelStatus: Record<string, ServerModelVerifyEntry>;
+  localOllamaTags: string[];
   voicePersona?: VoicePersona;
   onChangeVoicePersona?: (persona: VoicePersona) => void;
   onAddTask: (title: string, priority: 'high' | 'normal') => void;
@@ -56,7 +59,9 @@ interface MemoryAndPermissionsPanelProps {
   onRequestOpenApp: (appName: string) => void;
   onSelectModel: (spec: OpenSourceModelSpec) => void;
   onChangeOllamaUrl: (url: string) => void;
+  onUpdateLocalOllamaTags?: (tags: string[]) => void;
   onToggleWebSearch: (enabled: boolean) => void;
+  onToggleStrictModelMatch: (enabled: boolean) => void;
   onToggleEnsemble: (enabled: boolean) => void;
   onToggleEnsembleModel: (modelId: string) => void;
   activeTab?: PanelTab;
@@ -77,8 +82,11 @@ export function MemoryAndPermissionsPanel({
   selectedModelId,
   ollamaUrl,
   webSearchEnabled,
+  strictModelMatch,
   ensembleEnabled,
   ensembleModelIds,
+  verifiedModelStatus,
+  localOllamaTags,
   voicePersona,
   onChangeVoicePersona,
   onAddTask,
@@ -101,7 +109,9 @@ export function MemoryAndPermissionsPanel({
   onRequestOpenApp,
   onSelectModel,
   onChangeOllamaUrl,
+  onUpdateLocalOllamaTags,
   onToggleWebSearch,
+  onToggleStrictModelMatch,
   onToggleEnsemble,
   onToggleEnsembleModel,
   activeTab: controlledTab,
@@ -625,13 +635,18 @@ export function MemoryAndPermissionsPanel({
             selectedModelId={selectedModelId}
             ollamaUrl={ollamaUrl}
             webSearchEnabled={webSearchEnabled}
+            strictModelMatch={strictModelMatch}
             ensembleEnabled={ensembleEnabled}
             ensembleModelIds={ensembleModelIds}
+            verifiedModelStatus={verifiedModelStatus}
+            localOllamaTags={localOllamaTags}
             voicePersona={voicePersona}
             onChangeVoicePersona={onChangeVoicePersona}
             onSelectModel={onSelectModel}
             onChangeOllamaUrl={onChangeOllamaUrl}
+            onUpdateLocalOllamaTags={onUpdateLocalOllamaTags}
             onToggleWebSearch={onToggleWebSearch}
+            onToggleStrictModelMatch={onToggleStrictModelMatch}
             onToggleEnsemble={onToggleEnsemble}
             onToggleEnsembleModel={onToggleEnsembleModel}
           />

@@ -66,6 +66,7 @@ export interface OpenSourceModelSpec {
     | 'gpt-oss'
     | 'glm'
     | 'minicpm'
+    | 'nemotron'
     | 'offline'
     | 'custom';
   freeOnlineAvailable?: boolean;
@@ -113,6 +114,27 @@ export interface GroundingLink {
   uri: string;
 }
 
+export type ModelExecutionProvider =
+  | 'webgpu-onnx'
+  | 'ollama-local'
+  | 'nvidia-nim'
+  | 'huggingface-router'
+  | 'openrouter'
+  | 'google-gemma-api'
+  | 'google-gemini-fallback'
+  | 'offline-core';
+
+export interface ModelExecutionProvenance {
+  requestedModelId: string;
+  requestedModelLabel: string;
+  executedProvider: ModelExecutionProvider;
+  executedModelId: string;
+  exactWeightsVerified: boolean;
+  strictMode: boolean;
+  blockedByStrictMode?: boolean;
+  verificationNote: string;
+}
+
 export interface HudMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -127,6 +149,7 @@ export interface HudMessage {
     | 'cloud-research'
     | 'permission-gate';
   modelLabel?: string;
+  provenance?: ModelExecutionProvenance;
   pendingAction?: PendingAction;
   coachingTip?: CoachingTip;
   showBreathingTool?: boolean;

@@ -1,26 +1,39 @@
 import { useMemo, useState, type FormEvent } from 'react';
-import { Check, Cpu, Download, Globe, Layers, Loader2, Mic, Plus, ShieldCheck, Smartphone, Volume2 } from 'lucide-react';
+import { Check, Cpu, Download, Globe, Layers, Loader2, Mic, Plus, ShieldAlert, ShieldCheck, Smartphone, Volume2 } from 'lucide-react';
 import { OPEN_SOURCE_MODEL_CATALOG, OPEN_SOURCE_VOICE_MODELS } from '../lib/memoryStore';
+import { doesBackendModelMatch } from '../lib/modelVerification';
 import {
   browserModelRunner,
   detectDeviceHardware,
+  fetchLocalOllamaModels,
   loadCustomOpenSourceModels,
   offlineVoiceRunner,
   saveCustomOpenSourceModel,
 } from '../lib/openSourceEngine';
 import type { OfflineVoiceModelSpec, OpenSourceModelSpec, VoicePersona } from '../types/shamia';
 
+export interface ServerModelVerifyEntry {
+  exactWeightsAvailableOnline: boolean;
+  exactProvider?: string;
+  exactBackendModelId?: string;
+}
+
 interface OpenSourceModelHubProps {
   selectedModelId: string;
   ollamaUrl: string;
   webSearchEnabled: boolean;
+  strictModelMatch: boolean;
   ensembleEnabled: boolean;
   ensembleModelIds: string[];
+  verifiedModelStatus: Record<string, ServerModelVerifyEntry>;
+  localOllamaTags: string[];
   voicePersona?: VoicePersona;
   onChangeVoicePersona?: (persona: VoicePersona) => void;
   onSelectModel: (spec: OpenSourceModelSpec) => void;
   onChangeOllamaUrl: (url: string) => void;
+  onUpdateLocalOllamaTags?: (tags: string[]) => void;
   onToggleWebSearch: (enabled: boolean) => void;
+  onToggleStrictModelMatch: (enabled: boolean) => void;
   onToggleEnsemble: (enabled: boolean) => void;
   onToggleEnsembleModel: (modelId: string) => void;
 }
@@ -29,13 +42,18 @@ export function OpenSourceModelHub({
   selectedModelId,
   ollamaUrl,
   webSearchEnabled,
+  strictModelMatch,
   ensembleEnabled,
   ensembleModelIds,
+  verifiedModelStatus,
+  localOllamaTags,
   voicePersona = 'female',
   onChangeVoicePersona,
   onSelectModel,
   onChangeOllamaUrl,
+  onUpdateLocalOllamaTags,
   onToggleWebSearch,
+  onToggleStrictModelMatch,
   onToggleEnsemble,
   onToggleEnsembleModel,
 }: OpenSourceModelHubProps) {
@@ -151,12 +169,19 @@ export function OpenSourceModelHub({
 
   const handleCheckOllama = async () => {
     setOllamaTestState('testing');
-    try {
-      const cleanBase = ollamaUrl.replace(/\/+$/, '');
-      const res = await fetch(`${cleanBase}/api/tags`, { signal: AbortSignal.timeout(3000) });
-      setOllamaTestState(res.ok ? 'ok' : 'fail');
-    } catch {
-      setOllamaTestState('fail');
+    const tags = await fetchLocalOllamaModels(ollamaUrl);
+    if (tags.length > 0) {
+      onUpdateLocalOllamaTags?.(tags);
+      setOllamaTestState('ok');
+      setStatusMessage(`Connected to Local Ollama (${tags.length} exact models detected).`);
+    } else {
+      try {
+        const cleanBase = ollamaUrl.replace(/\/+$/, '');
+        const res = await fetch(`${cleanBase}/api/tags`, { signal: AbortSignal.timeout(3000) });
+        setOllamaTestState(res.ok ? 'ok' : 'fail');
+      } catch {
+        setOllamaTestState('fail');
+      }
     }
   };
 
@@ -208,6 +233,39 @@ export function OpenSourceModelHub({
             );
           })}
         </div>
+      </div>
+
+      {/* Strict Exact-Weights Model Verification Toggle */}
+      <div className="rounded-xl bg-[#090D12] border border-white/[0.07] p-3 flex flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-[#E8EEF3]">
+            {strictModelMatch ? (
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" aria-hidden="true" />
+            ) : (
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" aria-hidden="true" />
+            )}
+            <span>Strict Model Verification</span>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={strictModelMatch}
+            aria-label="Toggle Strict Model Verification"
+            onClick={() => onToggleStrictModelMatch(!strictModelMatch)}
+            className={`min-h-[32px] px-3 rounded-lg text-xs font-medium transition-colors shrink-0 ${
+              strictModelMatch
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/40'
+                : 'bg-[#111720] text-[#94A3B8] border border-white/10'
+            }`}
+          >
+            {strictModelMatch ? 'Strict ON' : 'Fallback OK'}
+          </button>
+        </div>
+        <p className="text-[11px] text-[#94A3B8] leading-snug">
+          {strictModelMatch
+            ? 'Blocks silent substitution — replies only from exact selected weights.'
+            : 'Prioritizes exact weights; allows compatible cloud fallback when unconnected.'}
+        </p>
       </div>
 
       {/* Real-Time Google + Open Web Search Toggle */}
@@ -291,10 +349,36 @@ export function OpenSourceModelHub({
           {visibleModels.map((model) => {
             const active = selectedModelId === model.id;
             const inEnsemble = ensembleModelIds.includes(model.id);
-            const isLoadedInBrowser = loadedBrowserId === model.id;
+            const isLoadedInBrowser =
+              loadedBrowserId === model.id && browserModelRunner.hasNativePipeline();
             const isCachedOffline = installedIds.includes(model.id);
             const safeForLocalInstall = model.minRamGb <= safeRamGb;
             const canInstallInBrowser = Boolean(model.hfRepo) && safeForLocalInstall;
+            const hasExactOllama = Boolean(
+              model.ollamaTag &&
+                localOllamaTags.some((tag) => doesBackendModelMatch(model.ollamaTag!, tag))
+            );
+            const serverVerify = verifiedModelStatus[model.id];
+            const exactWeightsLive =
+              isLoadedInBrowser ||
+              hasExactOllama ||
+              Boolean(serverVerify?.exactWeightsAvailableOnline);
+
+            const statusLabel = isLoadedInBrowser
+              ? 'Exact ONNX Active'
+              : hasExactOllama
+                ? 'Exact Ollama Live'
+                : serverVerify?.exactWeightsAvailableOnline
+                  ? 'Exact Weights Live'
+                  : canInstallInBrowser
+                    ? 'Install ONNX / Key'
+                    : 'Needs Key / Ollama';
+
+            const statusClass = exactWeightsLive
+              ? 'text-emerald-400'
+              : canInstallInBrowser
+                ? 'text-[#7DD3FC]'
+                : 'text-amber-300';
 
             return (
               <li
@@ -312,10 +396,7 @@ export function OpenSourceModelHub({
                       <span className="truncate">{model.name}</span>
                     </p>
                     <p className="text-[11px] text-[#94A3B8] mt-0.5">
-                      {model.params} ·{' '}
-                      <span className={safeForLocalInstall ? 'text-emerald-400' : 'text-[#7DD3FC]'}>
-                        {safeForLocalInstall ? 'Safe for Device' : 'Cloud Ready'}
-                      </span>
+                      {model.params} · <span className={statusClass}>{statusLabel}</span>
                     </p>
                   </div>
 

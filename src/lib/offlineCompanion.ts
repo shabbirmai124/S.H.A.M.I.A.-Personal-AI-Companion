@@ -9,11 +9,12 @@ export interface OfflineCompanionReply {
   showBreathingTool?: boolean;
 }
 
-export function cleanHtmlArtifacts(raw: string): string {
+export function cleanHtmlArtifacts(raw: string, preserveNewlines = false): string {
   if (!raw) return '';
-  return raw
+  const decoded = raw
+    .replace(/\r\n/g, '\n')
     .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/<[^>]+>/g, ' ')
+    .replace(/<\/?[a-z][a-z0-9-]*(?:\s[^>]*)?\/?>/gi, ' ')
     .replace(/&quot;/gi, '"')
     .replace(/&#0*39;|&apos;|&#x0*27;/gi, "'")
     .replace(/&#0*34;|&#x0*22;/gi, '"')
@@ -30,9 +31,18 @@ export function cleanHtmlArtifacts(raw: string): string {
     .replace(/&#x([0-9a-f]+);/gi, (_m, hex) => {
       const num = parseInt(hex, 16);
       return Number.isFinite(num) ? String.fromCharCode(num) : '';
-    })
-    .replace(/\s+/g, ' ')
-    .trim();
+    });
+
+  if (preserveNewlines) {
+    return decoded
+      .replace(/[ \t]+/g, ' ')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n[ \t]+/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  return decoded.replace(/\s+/g, ' ').trim();
 }
 
 const ENGLISH_CORRECTIONS: Array<{

@@ -49,6 +49,20 @@ export const MODEL_DISTINCT_PROFILES: Record<
       'MODEL IDENTITY [GLM-4 9B Chat]: Answer with university-level academic clarity, step-by-step derivations, and structured comparisons.',
     temperature: 0.3,
   },
+  'nemotron-nano-8b': {
+    displayName: 'NVIDIA Nemotron Nano 8B (Open Weights)',
+    architectureNote: 'NVIDIA Llama-3.1-Nemotron-Nano-8B-v1 Open-Weight Reasoning Architecture',
+    styleInstruction:
+      'MODEL IDENTITY [NVIDIA Nemotron Nano 8B]: Answer with rigorous engineering and STEM clarity, clear step-by-step reasoning, and actionable technical depth.',
+    temperature: 0.3,
+  },
+  'nemotron-mini-4b': {
+    displayName: 'NVIDIA Nemotron Mini 4B (Mobile Edge)',
+    architectureNote: 'NVIDIA Nemotron-Mini-4B-Instruct Pruned & Distilled Edge Architecture',
+    styleInstruction:
+      'MODEL IDENTITY [NVIDIA Nemotron Mini 4B]: Answer with crisp, well-organized, high-accuracy explanations tailored for fast mobile comprehension.',
+    temperature: 0.35,
+  },
   'gpt-oss-20b-free': {
     displayName: 'GPT-OSS 20B (Open Weights)',
     architectureNote: 'OpenAI GPT-OSS 20B Apache-2.0 Mixture-of-Experts Architecture',

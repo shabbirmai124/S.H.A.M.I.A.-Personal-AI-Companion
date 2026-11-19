@@ -17,8 +17,8 @@ Our primary goal in building **S.H.A.M.I.A.** is to make **open-source AI models
    - Filters and prioritizes models that are safe for the user's phone RAM (`Safe Only` vs `Show All`).
    - Blocks local installation of models whose RAM requirement (`minRamGb`) exceeds the phone's detected memory so the phone never freezes, overheats, or crashes.
 3. **Strict Active Model Synchronization (No Silent Fallback to Default)**
-   - Whichever model you select in the UI (`Gemma 4 · Real-Time Search`, `Qwen 3 8B`, `Qwen 3 4B`, `MiniCPM-o 2.6 8B`, `GLM-4 9B`, `GPT-OSS 20B`, `Llama 3.2 1B`, `Phi-3.5 Mini`, `DeepSeek 2B Offline Core`, etc.) is dynamically passed to the inference router (`modelId` + `modelLabel`).
-   - Every response is generated strictly by the active selected model and explicitly tagged with `[Model Name · ID: model-id]` so you can verify at a glance which exact model processed your request.
+   - Whichever model you select in the UI (`Gemma 4 · Real-Time Search`, `NVIDIA Nemotron Nano 8B`, `NVIDIA Nemotron Mini 4B`, `Qwen 3 8B`, `Qwen 3 4B`, `MiniCPM-o 2.6 8B`, `GLM-4 9B`, `GPT-OSS 20B`, `Llama 3.2 1B`, `Phi-3.5 Mini`, `DeepSeek 2B Offline Core`, etc.) is dynamically passed to the inference router (`modelId` + `modelLabel`).
+   - Normal responses stay clean and natural without repeating the model name; when you ask *"Which AI model am I using?"*, S.H.A.M.I.A. reports the exact active model name, ID, and architecture.
    - Switching models or tapping **New Chat** immediately aborts any in-flight request, clears prior model history contamination, and locks the session to your chosen model.
 4. **Anti-Freeze "Stop" Control & Instant "New Chat"**
    - **Stop Button**: Whenever a model is generating a response or speaking (`isThinking` / `isSpeaking`), a prominent **Stop** button appears in the header, thinking bar, and composer bar (plus `Escape` key shortcut) to cancel inference immediately via `AbortController`.
@@ -35,11 +35,13 @@ Our primary goal in building **S.H.A.M.I.A.** is to make **open-source AI models
 
 ---
 
-## 📦 Supported Open-Source Model Catalog (14 Text Models + 4 Offline Voice Models)
+## 📦 Supported Open-Source Model Catalog (16 Text Models + 4 Offline Voice Models)
 
 | Model Name | Model ID | Scale | Min RAM | Mobile / Offline & Cloud Capability |
 | :--- | :--- | :--- | :--- | :--- |
 | **Gemma 4 · Real-Time Search** | `gemma-4-free` | 4B – 27B | 4 GB | Live Google Search + ONNX / Ollama local support |
+| **NVIDIA Nemotron Nano 8B (Open Weights)** | `nemotron-nano-8b` | 8B | 8 GB | NVIDIA STEM/coding reasoning via Ollama & Free Cloud |
+| **NVIDIA Nemotron Mini 4B (Mobile Edge)** | `nemotron-mini-4b` | 4B | 4 GB | NVIDIA pruned 4B open model for 4nm / 6nm phones & Cloud |
 | **Qwen 3 8B (Chinese Open Weight)** | `qwen3-8b-chinese` | 8B | 8 GB | 4nm flagship phone local Ollama / Free Cloud |
 | **Qwen 3 4B (Phone Efficiency King)** | `qwen3-4b-edge` | 4B | 4 GB | 4nm / 6nm phone WebGPU ONNX, Ollama & Free Cloud |
 | **MiniCPM-o 2.6 8B (Chinese Voice AI)** | `minicpm-o-26` | 8B | 8 GB | Spoken dialogue open model via Ollama & Free Cloud |

@@ -81,6 +81,30 @@ object OpenSourceAiRepository {
             summary = "Popular Zhipu AI 9B Chinese open-weight model built for high-precision reasoning, coding, and syllabus study."
         ),
         OpenSourceModelSpec(
+            id = "nemotron-nano-8b",
+            name = "NVIDIA Nemotron Nano 8B (Open Weights)",
+            provider = "NVIDIA Open Model License",
+            params = "8B",
+            sizeLabel = "Free Cloud / ~4.7 GB Q4",
+            minRamGb = 8,
+            chipsetNote = "4nm Flagship Phone Ready",
+            hfRepo = "nvidia/Llama-3.1-Nemotron-Nano-8B-v1",
+            ollamaTag = "nemotron-mini",
+            summary = "NVIDIA open-weight 8B reasoning & instruction model tuned for high-precision STEM, coding, and structured problem solving."
+        ),
+        OpenSourceModelSpec(
+            id = "nemotron-mini-4b",
+            name = "NVIDIA Nemotron Mini 4B (Mobile Edge)",
+            provider = "NVIDIA Open Model License",
+            params = "4B",
+            sizeLabel = "Free Cloud / ~2.3 GB Q4",
+            minRamGb = 4,
+            chipsetNote = "4nm / 6nm Phone Ready",
+            hfRepo = "nvidia/Nemotron-Mini-4B-Instruct",
+            ollamaTag = "nemotron-mini:4b",
+            summary = "NVIDIA compact 4B open-weight model pruned and distilled for fast offline mobile reasoning, study planning, and clear answers."
+        ),
+        OpenSourceModelSpec(
             id = "gpt-oss-20b-free",
             name = "GPT-OSS 20B (Open Weights)",
             provider = "OpenAI Apache 2.0",

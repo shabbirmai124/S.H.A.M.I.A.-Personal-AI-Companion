@@ -63,18 +63,26 @@ import {
 } from './lib/memoryStore';
 import { generateOfflineCompanionReply } from './lib/offlineCompanion';
 import {
+  buildStrictMismatchGuidance,
+  createVerifiedProvenance,
+  doesBackendModelMatch,
+} from './lib/modelVerification';
+import {
   browserModelRunner,
+  fetchLocalOllamaModels,
   loadCustomOpenSourceModels,
   offlineVoiceRunner,
   queryLocalOllama,
   runFreeWebSearch,
 } from './lib/openSourceEngine';
+import type { ServerModelVerifyEntry } from './components/OpenSourceModelHub';
 import type {
   AlarmItem,
   CoreVisualState,
   DeviceControlState,
   GroundingLink,
   HudMessage,
+  ModelExecutionProvenance,
   NoteItem,
   OpenSourceModelSpec,
   PendingAction,
@@ -99,6 +107,7 @@ const STORAGE_KEYS = {
   controls: 'shamia.controls.v1',
   modelId: 'shamia.model.v3',
   ollamaUrl: 'shamia.ollama.v1',
+  strictModelMatch: 'shamia.strictModelMatch.v1',
   ensembleEnabled: 'shamia.ensembleEnabled.v1',
   ensembleModels: 'shamia.ensembleModels.v1',
   voicePersona: 'shamia.voicePersona.v1',
@@ -205,7 +214,14 @@ export default function App() {
   const [trackIndex, setTrackIndex] = useState(0);
   const [musicVolume, setMusicVolume] = useState(0.25);
 
-  // Live Telemetry
+  // Live Telemetry & Strict Model Verification State
+  const [strictModelMatch, setStrictModelMatch] = useState<boolean>(() =>
+    loadStoredJson(STORAGE_KEYS.strictModelMatch, true)
+  );
+  const [verifiedModelStatus, setVerifiedModelStatus] = useState<
+    Record<string, ServerModelVerifyEntry>
+  >({});
+  const [localOllamaTags, setLocalOllamaTags] = useState<string[]>([]);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [isOnline, setIsOnline] = useState(() =>
     typeof navigator !== 'undefined' ? navigator.onLine : true
@@ -261,6 +277,42 @@ export default function App() {
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEYS.alarms, JSON.stringify(alarms));
   }, [alarms]);
+
+  useEffect(() => {
+    window.localStorage.setItem(STORAGE_KEYS.strictModelMatch, JSON.stringify(strictModelMatch));
+  }, [strictModelMatch]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/models/verify')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { models?: Record<string, ServerModelVerifyEntry> } | null) => {
+        if (!cancelled && data?.models) {
+          setVerifiedModelStatus(data.models);
+        }
+      })
+      .catch(() => {
+        // Offline or unreachable server
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOnline]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!ollamaUrl) return;
+    fetchLocalOllamaModels(ollamaUrl)
+      .then((tags) => {
+        if (!cancelled && tags.length > 0) {
+          setLocalOllamaTags(tags);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [ollamaUrl]);
 
   useEffect(() => {
     window.localStorage.setItem(STORAGE_KEYS.permissions, JSON.stringify(permissions));
@@ -478,7 +530,7 @@ export default function App() {
         {
           id: `msg-switch-${Date.now()}`,
           role: 'assistant',
-          text: `[${spec.name} · ${spec.id}] Active model switched to ${spec.name}, ${addr}. All responses now come strictly from this model.`,
+          text: `Switched to **${spec.name}**, ${addr}. All responses will now come strictly from this model.`,
           timestamp: new Date().toISOString(),
           modelLabel: spec.name,
           source: spec.runtime === 'built-in' ? 'offline-core' : 'cloud-gemini',
@@ -797,7 +849,7 @@ export default function App() {
           if (local.directMemoryMutation) {
             const memVerdict = evaluatePermission(permissionMap, 'manage_memory');
             if (memVerdict === 'deny') {
-              const refusal = `[${selectedModel.name} · ID: ${selectedModel.id}] Memory storage is set to Deny in your Permission Vault, ${addr}.`;
+              const refusal = `Memory storage is set to Deny in your Permission Vault, ${addr}.`;
               setMessages((prev) => [
                 ...prev,
                 {
@@ -823,13 +875,12 @@ export default function App() {
           }
 
           if (local.replyText) {
-            const taggedLocalReply = `[${selectedModel.name} · ID: ${selectedModel.id}] ${local.replyText}`;
             setMessages((prev) => [
               ...prev,
               {
                 id: `msg-j-${Date.now()}`,
                 role: 'assistant',
-                text: taggedLocalReply,
+                text: local.replyText!,
                 timestamp: new Date().toISOString(),
                 source: selectedModel.runtime === 'built-in' ? 'offline-core' : 'cloud-gemini',
                 modelLabel: selectedModel.name,
@@ -847,6 +898,7 @@ export default function App() {
         modelId: selectedModel.id,
         modelName: selectedModel.name,
         runtime: selectedModel.runtime,
+        strictModelMatch,
         ensembleEnabled,
       });
 
@@ -854,11 +906,11 @@ export default function App() {
         let groundingLinks: GroundingLink[] = [];
         let webSummary = '';
 
-        // Engine A: In-Browser WebGPU Open-Source Model (when native ONNX pipeline is active in memory or device is offline)
+        // Engine A: Real In-Browser WebGPU/WASM ONNX Weights (ONLY when native ONNX pipeline is loaded in memory for exact selectedModel.id)
         if (
           !ensembleEnabled &&
           browserModelRunner.getLoadedModelId() === selectedModel.id &&
-          (browserModelRunner.hasNativePipeline() || !isOnline)
+          browserModelRunner.hasNativePipeline()
         ) {
           if (wantsSearch && webSearchEnabled && isOnline) {
             try {
@@ -869,9 +921,17 @@ export default function App() {
               // Continue gracefully
             }
           }
-          const rawReply = await browserModelRunner.generate(trimmed, identity, webSummary);
+          const onnxRes = await browserModelRunner.generate(trimmed, identity, webSummary);
           if (requestId !== activeRequestIdRef.current) return;
-          const reply = rawReply.replace(/^\[[^\]]+\]\s*/, '').trim();
+          const reply = onnxRes.text.replace(/^\[[^\]]+\]\s*/, '').trim();
+          const provenance = createVerifiedProvenance({
+            requestedModelId: selectedModel.id,
+            requestedModelLabel: selectedModel.name,
+            executedProvider: 'webgpu-onnx',
+            executedModelId: onnxRes.executedModel,
+            strictMode: strictModelMatch,
+            exactWeightsVerified: true,
+          });
           setMessages((prev) => [
             ...prev,
             {
@@ -882,16 +942,25 @@ export default function App() {
               intent: detectedIntent,
               source: 'webgpu-local',
               modelLabel: selectedModel.name,
+              provenance,
               groundingLinks,
               showBreathingTool: detectedIntent === 'mental-support',
             },
           ]);
-          speakReply(rawReply);
+          speakReply(reply);
           return;
         }
 
-        // Engine B: Local Ollama Model (if runtime is explicitly set to 'ollama')
-        if (selectedModel.runtime === 'ollama' && selectedModel.ollamaTag && !ensembleEnabled) {
+        // Engine B: Real Local Ollama Weights (runs whenever selectedModel.ollamaTag is pulled locally OR runtime === 'ollama')
+        const hasPulledOllamaTag = Boolean(
+          selectedModel.ollamaTag &&
+            localOllamaTags.some((tag) => doesBackendModelMatch(selectedModel.ollamaTag!, tag))
+        );
+        if (
+          selectedModel.ollamaTag &&
+          !ensembleEnabled &&
+          (selectedModel.runtime === 'ollama' || hasPulledOllamaTag)
+        ) {
           if (wantsSearch && webSearchEnabled && isOnline) {
             try {
               const searchRes = await runFreeWebSearch(trimmed);
@@ -916,7 +985,7 @@ export default function App() {
           const promptWithWeb = webSummary
             ? `${trimmed}\n\n[Real-Time Web Context — Synthesize constructively in your own words]: ${webSummary}`
             : trimmed;
-          const rawReply = await queryLocalOllama({
+          const ollamaRes = await queryLocalOllama({
             endpoint: ollamaUrl,
             modelTag: selectedModel.ollamaTag,
             prompt: promptWithWeb,
@@ -924,7 +993,15 @@ export default function App() {
             history: messages.slice(-6).map((m) => ({ role: m.role, text: m.text })),
           });
           if (requestId !== activeRequestIdRef.current) return;
-          const reply = rawReply.replace(/^\[[^\]]+\]\s*/, '').trim();
+          const reply = ollamaRes.content.replace(/^\[[^\]]+\]\s*/, '').trim();
+          const provenance = createVerifiedProvenance({
+            requestedModelId: selectedModel.id,
+            requestedModelLabel: selectedModel.name,
+            executedProvider: 'ollama-local',
+            executedModelId: ollamaRes.executedModel,
+            strictMode: strictModelMatch,
+            exactWeightsVerified: true,
+          });
           setMessages((prev) => [
             ...prev,
             {
@@ -935,15 +1012,16 @@ export default function App() {
               intent: detectedIntent,
               source: 'ollama-local',
               modelLabel: selectedModel.name,
+              provenance,
               groundingLinks,
               showBreathingTool: detectedIntent === 'mental-support',
             },
           ]);
-          speakReply(rawReply);
+          speakReply(reply);
           return;
         }
 
-        // Engine C: Active Model Backend Router (/api/shamia/chat handles all 14 open-weight models + live search synthesis)
+        // Engine C: Strict Active-Model Backend Router (/api/shamia/chat)
         if (isOnline) {
           try {
             const res = await fetch('/api/shamia/chat', {
@@ -954,6 +1032,7 @@ export default function App() {
                 message: trimmed,
                 modelId: selectedModel.id,
                 modelLabel: selectedModel.name,
+                strictModelMatch,
                 history: messages.slice(-6).map((m) => ({ role: m.role, text: m.text })),
                 identity,
                 detectedIntent,
@@ -976,6 +1055,9 @@ export default function App() {
               replyText?: string;
               modelLabel?: string;
               activeModelId?: string;
+              requestedModelId?: string;
+              blockedByStrictMode?: boolean;
+              provenance?: ModelExecutionProvenance;
               proposedAction?: Omit<PendingAction, 'id' | 'status' | 'createdAt'>;
               directMemoryMutation?:
                 | { kind: 'add_task'; title: string; priority: 'high' | 'normal' }
@@ -988,10 +1070,21 @@ export default function App() {
             };
 
             if (res.ok) {
+              // Strict client-side verification: reject any response whose requestedModelId does not match the active model
+              if (data.requestedModelId && data.requestedModelId !== selectedModel.id) {
+                console.warn('[S.H.A.M.I.A. Strict Reject] Discarded stale mismatched model response', {
+                  expected: selectedModel.id,
+                  received: data.requestedModelId,
+                });
+                return;
+              }
+
               console.info('[S.H.A.M.I.A. Response Verified]', {
                 requestedModelId: selectedModel.id,
-                processedByModelId: data.activeModelId || selectedModel.id,
-                processedByModelLabel: data.modelLabel || selectedModel.name,
+                executedProvider: data.provenance?.executedProvider,
+                executedModelId: data.provenance?.executedModelId,
+                exactWeightsVerified: data.provenance?.exactWeightsVerified,
+                strictMode: strictModelMatch,
               });
 
               if (
@@ -1022,6 +1115,7 @@ export default function App() {
                     data.source ||
                     (selectedModel.id === 'offline-core' ? 'offline-core' : 'cloud-gemini'),
                   modelLabel: confirmedLabel,
+                  provenance: data.provenance,
                   coachingTip: data.coachingTip,
                   showBreathingTool: data.showBreathingTool,
                   groundingLinks:
@@ -1041,13 +1135,44 @@ export default function App() {
             ) {
               return;
             }
-            // Fall through to local synthesis strictly preserving selectedModel.id & selectedModel.name
+            // Fall through carefully respecting strictModelMatch
           }
         }
 
         if (requestId !== activeRequestIdRef.current || controller.signal.aborted) return;
 
-        // Engine D: Local Resilient Companion strictly bound to selectedModel.id and selectedModel.name
+        // Engine D: Strict Offline Gate — NEVER silently substitute offline-core when another model is selected and strictModelMatch is ON
+        if (strictModelMatch && selectedModel.id !== 'offline-core') {
+          const strictText = buildStrictMismatchGuidance({
+            modelId: selectedModel.id,
+            modelLabel: selectedModel.name,
+            addr,
+          });
+          const provenance = createVerifiedProvenance({
+            requestedModelId: selectedModel.id,
+            requestedModelLabel: selectedModel.name,
+            executedProvider: 'offline-core',
+            executedModelId: 'none',
+            strictMode: true,
+            exactWeightsVerified: false,
+            blockedByStrictMode: true,
+          });
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `msg-j-${Date.now()}`,
+              role: 'assistant',
+              text: strictText,
+              timestamp: new Date().toISOString(),
+              intent: detectedIntent,
+              source: 'offline-core',
+              modelLabel: selectedModel.name,
+              provenance,
+            },
+          ]);
+          return;
+        }
+
         const offlineReply = generateOfflineCompanionReply(
           trimmed,
           addr,
@@ -1056,6 +1181,14 @@ export default function App() {
           selectedModel.name,
           webSummary
         );
+        const provenance = createVerifiedProvenance({
+          requestedModelId: selectedModel.id,
+          requestedModelLabel: selectedModel.name,
+          executedProvider: 'offline-core',
+          executedModelId: 'shamia-offline-core',
+          strictMode: strictModelMatch,
+          exactWeightsVerified: selectedModel.id === 'offline-core',
+        });
         setMessages((prev) => [
           ...prev,
           {
@@ -1064,8 +1197,9 @@ export default function App() {
             text: offlineReply.text,
             timestamp: new Date().toISOString(),
             intent: offlineReply.intent,
-            source: selectedModel.id === 'offline-core' ? 'offline-core' : 'cloud-gemini',
+            source: 'offline-core',
             modelLabel: selectedModel.name,
+            provenance,
             coachingTip: offlineReply.coachingTip,
             showBreathingTool: offlineReply.showBreathingTool,
             groundingLinks,
@@ -1099,6 +1233,7 @@ export default function App() {
       ensembleModelIds,
       identity,
       isOnline,
+      localOllamaTags,
       messages,
       ollamaUrl,
       permissionMap,
@@ -1106,6 +1241,7 @@ export default function App() {
       selectedModel,
       speakReply,
       stageOrExecuteAction,
+      strictModelMatch,
       syllabus,
       tasks,
       webSearchEnabled,
@@ -1599,8 +1735,11 @@ export default function App() {
             selectedModelId={selectedModelId}
             ollamaUrl={ollamaUrl}
             webSearchEnabled={webSearchEnabled}
+            strictModelMatch={strictModelMatch}
             ensembleEnabled={ensembleEnabled}
             ensembleModelIds={ensembleModelIds}
+            verifiedModelStatus={verifiedModelStatus}
+            localOllamaTags={localOllamaTags}
             voicePersona={voicePersona}
             onChangeVoicePersona={setVoicePersona}
             onAddTask={(title, priority) => setTasks((prev) => addTaskItem(prev, title, priority))}
@@ -1671,7 +1810,9 @@ export default function App() {
             }}
             onSelectModel={handleSelectModel}
             onChangeOllamaUrl={setOllamaUrl}
+            onUpdateLocalOllamaTags={setLocalOllamaTags}
             onToggleWebSearch={setWebSearchEnabled}
+            onToggleStrictModelMatch={setStrictModelMatch}
             onToggleEnsemble={setEnsembleEnabled}
             onToggleEnsembleModel={handleToggleEnsembleModel}
             activeTab={rightTab}
@@ -1715,8 +1856,11 @@ export default function App() {
                 selectedModelId={selectedModelId}
                 ollamaUrl={ollamaUrl}
                 webSearchEnabled={webSearchEnabled}
+                strictModelMatch={strictModelMatch}
                 ensembleEnabled={ensembleEnabled}
                 ensembleModelIds={ensembleModelIds}
+                verifiedModelStatus={verifiedModelStatus}
+                localOllamaTags={localOllamaTags}
                 voicePersona={voicePersona}
                 onChangeVoicePersona={setVoicePersona}
                 onAddTask={(title, priority) =>
@@ -1796,7 +1940,9 @@ export default function App() {
                   setMobileDrawerOpen(false);
                 }}
                 onChangeOllamaUrl={setOllamaUrl}
+                onUpdateLocalOllamaTags={setLocalOllamaTags}
                 onToggleWebSearch={setWebSearchEnabled}
+                onToggleStrictModelMatch={setStrictModelMatch}
                 onToggleEnsemble={setEnsembleEnabled}
                 onToggleEnsembleModel={handleToggleEnsembleModel}
                 activeTab={rightTab}
@@ -1813,7 +1959,7 @@ export default function App() {
           identity={identity}
           onSave={(next) => {
             setIdentity(next);
-            const confirmMsg = `[${selectedModel.name} · ID: ${selectedModel.id}] Profile updated, ${next.addressAs}. I have registered your account name as ${next.fullName} and will address you as "${next.addressAs}".`;
+            const confirmMsg = `Profile updated, ${next.addressAs}. I have registered your account name as ${next.fullName} and will address you as "${next.addressAs}".`;
             setMessages((prev) => [
               ...prev,
               {
@@ -1825,7 +1971,7 @@ export default function App() {
                 modelLabel: selectedModel.name,
               },
             ]);
-            speakReply(confirmMsg.replace(/^\[[^\]]+\]\s*/, ''));
+            speakReply(confirmMsg);
           }}
           onClose={() => setProfileModalOpen(false)}
         />
